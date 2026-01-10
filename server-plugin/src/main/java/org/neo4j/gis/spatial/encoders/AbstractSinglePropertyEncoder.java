@@ -20,6 +20,10 @@
 
 package org.neo4j.gis.spatial.encoders;
 
+import static org.neo4j.gis.spatial.Constants.PROP_GEOM;
+import static org.neo4j.gis.spatial.Constants.PROP_TYPE;
+
+import java.util.Set;
 import org.neo4j.gis.spatial.AbstractGeometryEncoder;
 
 public abstract class AbstractSinglePropertyEncoder extends AbstractGeometryEncoder implements Configurable {
@@ -47,5 +51,11 @@ public abstract class AbstractSinglePropertyEncoder extends AbstractGeometryEnco
 	@Override
 	public String getSignature() {
 		return "GeometryEncoder(geom='" + geomProperty + "', bbox='" + bboxProperty + "')";
+	}
+
+
+	@Override
+	public Set<String> getEncoderProperties() {
+		return Set.of(bboxProperty, geomProperty, PROP_TYPE);
 	}
 }

@@ -24,71 +24,57 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.neo4j.configuration.GraphDatabaseSettings.DEFAULT_DATABASE_NAME;
 
-import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
-import java.util.function.Consumer;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
+import java.util.logging.Logger;
 import org.junit.jupiter.api.Test;
 import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.CoordinateList;
 import org.locationtech.jts.geom.Envelope;
 import org.locationtech.jts.geom.LineString;
-import org.neo4j.dbms.api.DatabaseManagementService;
-import org.neo4j.exceptions.KernelException;
 import org.neo4j.gis.spatial.encoders.NativePointEncoder;
 import org.neo4j.gis.spatial.encoders.SimpleGraphEncoder;
 import org.neo4j.gis.spatial.encoders.SimplePointEncoder;
 import org.neo4j.gis.spatial.encoders.SimplePropertyEncoder;
-import org.neo4j.gis.spatial.index.IndexManager;
+import org.neo4j.gis.spatial.functions.SpatialFunctions;
+import org.neo4j.gis.spatial.index.IndexManagerImpl;
 import org.neo4j.gis.spatial.index.LayerGeohashPointIndex;
-import org.neo4j.gis.spatial.index.LayerIndexReader;
 import org.neo4j.gis.spatial.index.LayerRTreeIndex;
-import org.neo4j.gis.spatial.osm.OSMGeometryEncoder;
-import org.neo4j.gis.spatial.osm.OSMLayer;
 import org.neo4j.gis.spatial.pipes.GeoPipeline;
 import org.neo4j.gis.spatial.procedures.SpatialProcedures;
 import org.neo4j.gis.spatial.rtree.ProgressLoggingListener;
-import org.neo4j.graphdb.GraphDatabaseService;
 import org.neo4j.graphdb.Label;
 import org.neo4j.graphdb.Node;
 import org.neo4j.graphdb.ResourceIterator;
 import org.neo4j.graphdb.Result;
 import org.neo4j.graphdb.Transaction;
 import org.neo4j.internal.kernel.api.security.SecurityContext;
-import org.neo4j.kernel.api.procedure.GlobalProcedures;
 import org.neo4j.kernel.internal.GraphDatabaseAPI;
-import org.neo4j.test.TestDatabaseManagementServiceBuilder;
+import org.neo4j.spatial.api.SpatialRecord;
+import org.neo4j.spatial.api.encoder.GeometryEncoder;
+import org.neo4j.spatial.api.index.SpatialIndexWriter;
+import org.neo4j.spatial.api.layer.EditableLayer;
+import org.neo4j.spatial.api.layer.Layer;
+import org.neo4j.spatial.testutils.Neo4jTestCase;
 
-public class LayersTest {
+public class LayersTest extends Neo4jTestCase {
 
-	private DatabaseManagementService databases;
-	private GraphDatabaseService graphDb;
+	private static final Logger LOGGER = Logger.getLogger(LayersTest.class.getName());
 
-	@BeforeEach
-	public void setup() throws KernelException {
-		databases = new TestDatabaseManagementServiceBuilder(new File("target/layers").toPath()).impermanent().build();
-		graphDb = databases.database(DEFAULT_DATABASE_NAME);
-		((GraphDatabaseAPI) graphDb).getDependencyResolver().resolveDependency(GlobalProcedures.class)
-				.registerProcedure(SpatialProcedures.class);
-	}
-
-	@AfterEach
-	public void teardown() {
-		databases.shutdown();
+	@Override
+	protected List<Class<?>> loadProceduresAndFunctions() {
+		return List.of(SpatialFunctions.class, SpatialProcedures.class);
 	}
 
 	@Test
 	public void testBasicLayerOperations() {
 		String layerName = "test";
 		SpatialDatabaseService spatial = new SpatialDatabaseService(
-				new IndexManager((GraphDatabaseAPI) graphDb, SecurityContext.AUTH_DISABLED));
+				new IndexManagerImpl((GraphDatabaseAPI) graphDb(), SecurityContext.AUTH_DISABLED));
 		inTx(tx -> {
-			Layer layer = spatial.getLayer(tx, layerName);
+			Layer layer = spatial.getLayer(tx, layerName, true);
 			assertNull(layer);
 		});
 		inTx(tx -> {
@@ -97,8 +83,8 @@ public class LayersTest {
 			assertThat("Should be a default layer", layer instanceof DefaultLayer);
 		});
 		inTx(tx -> spatial.deleteLayer(tx, layerName,
-				new ProgressLoggingListener("deleting layer '" + layerName + "'", System.out)));
-		inTx(tx -> assertNull(spatial.getLayer(tx, layerName)));
+				new ProgressLoggingListener("deleting layer '" + layerName + "'", LOGGER)));
+		inTx(tx -> assertNull(spatial.getLayer(tx, layerName, true)));
 	}
 
 	@Test
@@ -121,26 +107,27 @@ public class LayersTest {
 		testPointLayer(LayerGeohashPointIndex.class, NativePointEncoder.class);
 	}
 
-	private void testPointLayer(Class<? extends LayerIndexReader> indexClass,
+	private void testPointLayer(Class<? extends SpatialIndexWriter> indexClass,
 			Class<? extends GeometryEncoder> encoderClass) {
 		String layerName = "points";
 		SpatialDatabaseService spatial = new SpatialDatabaseService(
-				new IndexManager((GraphDatabaseAPI) graphDb, SecurityContext.AUTH_DISABLED));
+				new IndexManagerImpl((GraphDatabaseAPI) graphDb(), SecurityContext.AUTH_DISABLED));
 		inTx(tx -> {
 			EditableLayer layer = (EditableLayer) spatial.createLayer(tx, layerName, encoderClass,
 					EditableLayerImpl.class, indexClass, null, null);
 			assertNotNull(layer);
 		});
 		inTx(tx -> {
-			EditableLayer layer = (EditableLayer) spatial.getLayer(tx, layerName);
-			SpatialDatabaseRecord record = layer.add(tx,
+			EditableLayer layer = (EditableLayer) spatial.getLayer(tx, layerName, false);
+			SpatialRecord record = layer.add(tx,
 					layer.getGeometryFactory().createPoint(new Coordinate(15.3, 56.2)));
+			layer.finalizeTransaction(tx);
 			assertNotNull(record);
 		});
 		// finds geometries that contain the given geometry
-		try (Transaction tx = graphDb.beginTx()) {
-			Layer layer = spatial.getLayer(tx, layerName);
-			List<SpatialDatabaseRecord> results = GeoPipeline
+		try (Transaction tx = graphDb().beginTx()) {
+			Layer layer = spatial.getLayer(tx, layerName, true);
+			List<SpatialRecord> results = GeoPipeline
 					.startContainSearch(tx, layer,
 							layer.getGeometryFactory().toGeometry(new Envelope(15.0, 16.0, 56.0, 57.0)))
 					.toSpatialDatabaseRecordList();
@@ -157,9 +144,9 @@ public class LayersTest {
 			tx.commit();
 		}
 		inTx(tx -> spatial.deleteLayer(tx, layerName,
-				new ProgressLoggingListener("deleting layer '" + layerName + "'", System.out)));
-		inTx(tx -> assertNull(spatial.getLayer(tx, layerName)));
-		IndexManager.waitForDeletions();
+				new ProgressLoggingListener("deleting layer '" + layerName + "'", LOGGER)));
+		inTx(tx -> assertNull(spatial.getLayer(tx, layerName, true)));
+		IndexManagerImpl.waitForDeletions();
 	}
 
 	@Test
@@ -175,19 +162,20 @@ public class LayersTest {
 	private void testDeleteGeometry(Class<? extends GeometryEncoder> encoderClass) {
 		String layerName = "test";
 		SpatialDatabaseService spatial = new SpatialDatabaseService(
-				new IndexManager((GraphDatabaseAPI) graphDb, SecurityContext.AUTH_DISABLED));
+				new IndexManagerImpl((GraphDatabaseAPI) graphDb(), SecurityContext.AUTH_DISABLED));
 		inTx(tx -> {
 			EditableLayer layer = (EditableLayer) spatial.createLayer(tx, layerName, encoderClass,
-					EditableLayerImpl.class, null, null, null);
+					EditableLayerImpl.class, LayerRTreeIndex.class, null, null);
 			assertNotNull(layer);
 		});
 		inTx(tx -> {
-			EditableLayer layer = (EditableLayer) spatial.getLayer(tx, layerName);
-			SpatialDatabaseRecord record = layer.add(tx,
+			EditableLayer layer = (EditableLayer) spatial.getLayer(tx, layerName, false);
+			SpatialRecord record = layer.add(tx,
 					layer.getGeometryFactory().createPoint(new Coordinate(15.3, 56.2)));
 			assertNotNull(record);
 			// try to remove the geometry
-			layer.delete(tx, record.getNodeId());
+			layer.delete(tx, record.getId());
+			layer.finalizeTransaction(tx);
 		});
 	}
 
@@ -195,23 +183,24 @@ public class LayersTest {
 	public void testEditableLayer() {
 		String layerName = "test";
 		SpatialDatabaseService spatial = new SpatialDatabaseService(
-				new IndexManager((GraphDatabaseAPI) graphDb, SecurityContext.AUTH_DISABLED));
+				new IndexManagerImpl((GraphDatabaseAPI) graphDb(), SecurityContext.AUTH_DISABLED));
 		inTx(tx -> {
-			EditableLayer layer = spatial.getOrCreateEditableLayer(tx, layerName, null, null);
+			EditableLayer layer = spatial.getOrCreateEditableLayer(tx, layerName, null, null, true);
 			assertNotNull(layer);
 		});
 		inTx(tx -> {
-			EditableLayer layer = (EditableLayer) spatial.getLayer(tx, layerName);
-			SpatialDatabaseRecord record = layer.add(tx,
+			EditableLayer layer = (EditableLayer) spatial.getLayer(tx, layerName, false);
+			SpatialRecord record = layer.add(tx,
 					layer.getGeometryFactory().createPoint(new Coordinate(15.3, 56.2)));
 			assertNotNull(record);
+			layer.finalizeTransaction(tx);
 		});
 
-		try (Transaction tx = graphDb.beginTx()) {
-			EditableLayer layer = (EditableLayer) spatial.getLayer(tx, layerName);
+		try (Transaction tx = graphDb().beginTx()) {
+			EditableLayer layer = (EditableLayer) spatial.getLayer(tx, layerName, true);
 
 			// finds geometries that contain the given geometry
-			List<SpatialDatabaseRecord> results = GeoPipeline
+			List<SpatialRecord> results = GeoPipeline
 					.startContainSearch(tx, layer,
 							layer.getGeometryFactory().toGeometry(new Envelope(15.0, 16.0, 56.0, 57.0)))
 					.toSpatialDatabaseRecordList();
@@ -232,9 +221,9 @@ public class LayersTest {
 	@Test
 	public void testSnapToLine() {
 		SpatialDatabaseService spatial = new SpatialDatabaseService(
-				new IndexManager((GraphDatabaseAPI) graphDb, SecurityContext.AUTH_DISABLED));
+				new IndexManagerImpl((GraphDatabaseAPI) graphDb(), SecurityContext.AUTH_DISABLED));
 		inTx(tx -> {
-			EditableLayer layer = spatial.getOrCreateEditableLayer(tx, "roads", null, null);
+			EditableLayer layer = spatial.getOrCreateEditableLayer(tx, "roads", null, null, true);
 			Coordinate crossing_bygg_forstadsgatan = new Coordinate(13.0171471, 55.6074148);
 			Coordinate[] waypoints_forstadsgatan = {new Coordinate(13.0201511, 55.6066846),
 					crossing_bygg_forstadsgatan};
@@ -258,26 +247,23 @@ public class LayersTest {
 				DynamicLayer.class);
 		testSpecificEditableLayer("test dynamic layer with graph encoder", SimpleGraphEncoder.class,
 				DynamicLayer.class);
-		testSpecificEditableLayer("test OSM layer with OSM encoder", OSMGeometryEncoder.class, OSMLayer.class);
 		testSpecificEditableLayer("test editable layer with property encoder", SimplePropertyEncoder.class,
 				EditableLayerImpl.class);
 		testSpecificEditableLayer("test editable layer with graph encoder", SimpleGraphEncoder.class,
-				EditableLayerImpl.class);
-		testSpecificEditableLayer("test editable layer with OSM encoder", OSMGeometryEncoder.class,
 				EditableLayerImpl.class);
 	}
 
 	private String testSpecificEditableLayer(String layerName, Class<? extends GeometryEncoder> geometryEncoderClass,
 			Class<? extends Layer> layerClass) {
 		SpatialDatabaseService spatial = new SpatialDatabaseService(
-				new IndexManager((GraphDatabaseAPI) graphDb, SecurityContext.AUTH_DISABLED));
+				new IndexManagerImpl((GraphDatabaseAPI) graphDb(), SecurityContext.AUTH_DISABLED));
 		inTx(tx -> {
 			Layer layer = spatial.createLayer(tx, layerName, geometryEncoderClass, layerClass, null);
 			assertNotNull(layer);
 			assertInstanceOf(EditableLayer.class, layer, "Should be an editable layer");
 		});
 		inTx(tx -> {
-			Layer layer = spatial.getLayer(tx, layerName);
+			Layer layer = spatial.getLayer(tx, layerName, false);
 			assertNotNull(layer);
 			assertInstanceOf(EditableLayer.class, layer, "Should be an editable layer");
 			EditableLayer editableLayer = (EditableLayer) layer;
@@ -297,12 +283,13 @@ public class LayersTest {
 			coordinates.add(new Coordinate(14.2, 56.1), false);
 			coordinates.add(new Coordinate(14.0, 56.0), false);
 			editableLayer.add(tx, layer.getGeometryFactory().createLineString(coordinates.toCoordinateArray()));
+			editableLayer.finalizeTransaction(tx);
 		});
 
 		// TODO this test is not complete
 
-		try (Transaction tx = graphDb.beginTx()) {
-			EditableLayer layer = (EditableLayer) spatial.getLayer(tx, layerName);
+		try (Transaction tx = graphDb().beginTx()) {
+			EditableLayer layer = (EditableLayer) spatial.getLayer(tx, layerName, true);
 			printResults(layer, GeoPipeline
 					.startIntersectSearch(tx, layer,
 							layer.getGeometryFactory().toGeometry(new Envelope(13.2, 14.1, 56.1, 56.2)))
@@ -317,29 +304,11 @@ public class LayersTest {
 		return layerName;
 	}
 
-	private static void printResults(Layer layer, List<SpatialDatabaseRecord> results) {
+	private static void printResults(Layer layer, List<SpatialRecord> results) {
 		System.out.println("\tTesting layer '" + layer.getName() + "' (class " + layer.getClass() + "), found results: "
 				+ results.size());
-		for (SpatialDatabaseRecord r : results) {
+		for (SpatialRecord r : results) {
 			System.out.println("\t\tGeometry: " + r);
-		}
-	}
-
-	@Test
-	public void testShapefileExport() throws Exception {
-		ShapefileExporter exporter = new ShapefileExporter(graphDb);
-		exporter.setExportDir("target/export");
-		ArrayList<String> layers = new ArrayList<>();
-
-		layers.add(testSpecificEditableLayer("test dynamic layer with property encoder", SimplePropertyEncoder.class,
-				DynamicLayer.class));
-		layers.add(testSpecificEditableLayer("test dynamic layer with graph encoder", SimpleGraphEncoder.class,
-				DynamicLayer.class));
-		layers.add(testSpecificEditableLayer("test dynamic layer with OSM encoder", OSMGeometryEncoder.class,
-				OSMLayer.class));
-
-		for (String layerName : layers) {
-			exporter.exportLayer(layerName);
 		}
 	}
 
@@ -349,13 +318,13 @@ public class LayersTest {
 //        File dbPath = new File("target/var/BulkTest");
 //        GraphDatabaseService db = new GraphDatabaseFactory().newEmbeddedDatabase(dbPath.getCanonicalPath());
 		SpatialDatabaseService spatial = new SpatialDatabaseService(
-				new IndexManager((GraphDatabaseAPI) graphDb, SecurityContext.AUTH_DISABLED));
-		inTx(tx -> spatial.getOrCreateSimplePointLayer(tx, "Coordinates", "rtree", "lat", "lon", null));
+				new IndexManagerImpl((GraphDatabaseAPI) graphDb(), SecurityContext.AUTH_DISABLED));
+		inTx(tx -> spatial.getOrCreateSimplePointLayer(tx, "Coordinates", "rtree", "lat", "lon", null, true));
 
 		Random rand = new Random();
 
-		try (Transaction tx = graphDb.beginTx()) {
-			SimplePointLayer layer = (SimplePointLayer) spatial.getLayer(tx, "Coordinates");
+		try (Transaction tx = graphDb().beginTx()) {
+			SimplePointLayer layer = (SimplePointLayer) spatial.getLayer(tx, "Coordinates", false);
 			List<Node> coordinateNodes = new ArrayList<>();
 			for (int i = 0; i < 1000; i++) {
 				Node node = tx.createNode();
@@ -369,7 +338,7 @@ public class LayersTest {
 			tx.commit();
 		}
 
-		try (Transaction tx = graphDb.beginTx()) { // 'points',{longitude:15.0,latitude:60.0},100
+		try (Transaction tx = graphDb().beginTx()) { // 'points',{longitude:15.0,latitude:60.0},100
 			Result result = tx.execute(
 					"CALL spatial.withinDistance('Coordinates',{longitude:0.5, latitude:0.5},1000.0) YIELD node AS malmo");
 			int i = 0;
@@ -382,22 +351,14 @@ public class LayersTest {
 			tx.commit();
 		}
 
-		try (Transaction tx = graphDb.beginTx()) {
+		try (Transaction tx = graphDb().beginTx()) {
 			String cypher = "MATCH ()-[:RTREE_ROOT]->(n)\n" +
 					"MATCH (n)-[:RTREE_CHILD]->(m)-[:RTREE_REFERENCE]->(p)\n" +
 					"RETURN count(p)";
 			Result result = tx.execute(cypher);
-//           System.out.println(result.columns().toString());
 			Object obj = result.columnAs("count(p)").next();
 			assertInstanceOf(Long.class, obj);
 			assertEquals(1000L, (long) ((Long) obj));
-			tx.commit();
-		}
-	}
-
-	private void inTx(Consumer<Transaction> txFunction) {
-		try (Transaction tx = graphDb.beginTx()) {
-			txFunction.accept(tx);
 			tx.commit();
 		}
 	}

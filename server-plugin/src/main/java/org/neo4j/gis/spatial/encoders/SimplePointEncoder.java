@@ -19,6 +19,10 @@
  */
 package org.neo4j.gis.spatial.encoders;
 
+import static org.neo4j.gis.spatial.Constants.PROP_TYPE;
+
+import java.util.List;
+import java.util.Set;
 import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.Geometry;
 import org.neo4j.gis.spatial.AbstractGeometryEncoder;
@@ -35,6 +39,11 @@ public class SimplePointEncoder extends AbstractGeometryEncoder implements Confi
 	public static final String DEFAULT_Y = "latitude";
 	protected String xProperty = DEFAULT_X;
 	protected String yProperty = DEFAULT_Y;
+
+	@Override
+	public List<String> getIdentifiers() {
+		return List.of("SimplePointEncoder", "org.neo4j.gis.spatial.encoders.SimplePointEncoder");
+	}
 
 	@Override
 	protected void encodeGeometryShape(Transaction tx, Geometry geometry, Entity container) {
@@ -78,5 +87,10 @@ public class SimplePointEncoder extends AbstractGeometryEncoder implements Confi
 	@Override
 	public String getSignature() {
 		return "SimplePointEncoder(x='" + xProperty + "', y='" + yProperty + "', bbox='" + bboxProperty + "')";
+	}
+
+	@Override
+	public Set<String> getEncoderProperties() {
+		return Set.of(bboxProperty, xProperty, yProperty, PROP_TYPE);
 	}
 }

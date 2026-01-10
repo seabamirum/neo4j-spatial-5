@@ -19,15 +19,29 @@
  */
 package org.neo4j.gis.spatial;
 
+import static org.neo4j.gis.spatial.Constants.GTYPE_LINESTRING;
+import static org.neo4j.gis.spatial.Constants.GTYPE_MULTILINESTRING;
+import static org.neo4j.gis.spatial.Constants.GTYPE_MULTIPOINT;
+import static org.neo4j.gis.spatial.Constants.GTYPE_MULTIPOLYGON;
+import static org.neo4j.gis.spatial.Constants.GTYPE_POINT;
+import static org.neo4j.gis.spatial.Constants.GTYPE_POLYGON;
+import static org.neo4j.gis.spatial.Constants.PROP_BBOX;
+import static org.neo4j.gis.spatial.Constants.PROP_TYPE;
+
+import java.util.Collections;
+import java.util.Map;
+import java.util.Set;
 import org.apache.commons.lang3.ArrayUtils;
 import org.locationtech.jts.geom.Geometry;
 import org.locationtech.jts.geom.GeometryFactory;
-import org.neo4j.gis.spatial.rtree.Envelope;
 import org.neo4j.graphdb.Entity;
 import org.neo4j.graphdb.Node;
 import org.neo4j.graphdb.Transaction;
+import org.neo4j.spatial.api.Envelope;
+import org.neo4j.spatial.api.encoder.GeometryEncoder;
+import org.neo4j.spatial.api.layer.Layer;
 
-public abstract class AbstractGeometryEncoder implements GeometryEncoder, Constants {
+public abstract class AbstractGeometryEncoder implements GeometryEncoder {
 
 	protected String bboxProperty = PROP_BBOX;
 
@@ -125,6 +139,25 @@ public abstract class AbstractGeometryEncoder implements GeometryEncoder, Consta
 	@Override
 	public String getSignature() {
 		return "GeometryEncoder(bbox='" + bboxProperty + "')";
+	}
+
+	@Override
+	public Set<String> getEncoderProperties() {
+		return Set.of(bboxProperty);
+	}
+
+	@Override
+	public boolean hasComplexAttributes() {
+		return false;
+	}
+
+	@Override
+	public Map<String, ?> getAttributes(Transaction tx, Node geomNode) {
+		Set<String> extraProperties = layer.getExtraProperties(tx).keySet();
+		if (extraProperties.isEmpty()) {
+			return Collections.emptyMap();
+		}
+		return geomNode.getProperties(extraProperties.toArray(new String[0]));
 	}
 
 	// Attributes

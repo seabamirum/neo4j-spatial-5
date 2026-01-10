@@ -19,16 +19,20 @@
  */
 package org.neo4j.gis.spatial;
 
+import static org.neo4j.gis.spatial.Constants.GTYPE_GEOMETRY;
+
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.logging.Logger;
 import org.geotools.filter.text.cql2.CQLException;
 import org.geotools.filter.text.ecql.ECQL;
 import org.neo4j.graphdb.Direction;
 import org.neo4j.graphdb.Node;
 import org.neo4j.graphdb.Relationship;
 import org.neo4j.graphdb.Transaction;
+import org.neo4j.spatial.api.layer.Layer;
 
 /**
  * <p>
@@ -43,7 +47,7 @@ import org.neo4j.graphdb.Transaction;
  * layer to the consuming application (desktop or web application).
  * </p>
  * <p>
- * DynamicLayer extends EdiableLayerImpl, and is therefore editable. Not that
+ * DynamicLayer extends EdiableLayerImpl, and is therefore editable. Note that
  * this support is dependant on the correct working of the appropriate
  * GeometryEncoder, and also does not extend to the sub-layers provided. Those
  * are read-only views.
@@ -51,7 +55,13 @@ import org.neo4j.graphdb.Transaction;
  */
 public class DynamicLayer extends EditableLayerImpl {
 
+	private static final Logger LOGGER = Logger.getLogger(DynamicLayer.class.getName());
 	private LinkedHashMap<String, Layer> layers;
+
+	@Override
+	public List<String> getIdentifiers() {
+		return List.of("DynamicLayer", "org.neo4j.gis.spatial.DynamicLayer");
+	}
 
 	private synchronized Map<String, Layer> getLayerMap(Transaction tx) {
 		if (layers == null) {
@@ -60,7 +70,7 @@ public class DynamicLayer extends EditableLayerImpl {
 			try (var relationships = getLayerNode(tx).getRelationships(Direction.OUTGOING,
 					SpatialRelationshipTypes.LAYER_CONFIG)) {
 				for (Relationship rel : relationships) {
-					DynamicLayerConfig config = new DynamicLayerConfig(this, rel.getEndNode());
+					DynamicLayerConfig config = new DynamicLayerConfig(this, rel.getEndNode(), isReadOnly());
 					layers.put(config.getName(), config);
 				}
 			}
@@ -69,6 +79,7 @@ public class DynamicLayer extends EditableLayerImpl {
 	}
 
 	protected boolean removeLayerConfig(Transaction tx, String name) {
+		checkWritable();
 		Layer layer = getLayerMap(tx).get(name);
 		if (layer instanceof DynamicLayerConfig) {
 			synchronized (this) {
@@ -81,10 +92,10 @@ public class DynamicLayer extends EditableLayerImpl {
 			}
 		}
 		if (layer == null) {
-			System.out.println("Dynamic layer not found: " + name);
+			LOGGER.info("Dynamic layer not found: " + name);
 			return false;
 		}
-		System.out.println("Layer is not dynamic and cannot be deleted: " + name);
+		LOGGER.warning("Layer is not dynamic and cannot be deleted: " + name);
 		return false;
 	}
 
@@ -152,15 +163,16 @@ public class DynamicLayer extends EditableLayerImpl {
 		if (layer != null) {
 			if (layer instanceof DynamicLayerConfig config) {
 				if (config.getGeometryType(tx) != type || !config.getQuery().equals(query)) {
-					System.err.println("Existing LayerConfig with different geometry type or query: " + config);
+					LOGGER.warning("Existing LayerConfig with different geometry type or query: " + config);
 					return null;
 				}
 				return config;
 			}
-			System.err.println("Existing Layer has same name as requested LayerConfig: " + layer.getName());
+			LOGGER.warning("Existing Layer has same name as requested LayerConfig: " + layer.getName());
 			return null;
 		}
 		synchronized (this) {
+			checkWritable();
 			DynamicLayerConfig config = new DynamicLayerConfig(tx, this, name, type, query);
 			layers = null;    // force recalculation of layers cache
 			return config;
@@ -188,28 +200,15 @@ public class DynamicLayer extends EditableLayerImpl {
 				}
 				return config;
 			}
-			System.err.println("Existing Layer has same name as requested LayerConfig: " + layer.getName());
+			LOGGER.warning("Existing Layer has same name as requested LayerConfig: " + layer.getName());
 			return null;
 		}
-		System.err.println("No such layer: " + name);
+		LOGGER.warning("No such layer: " + name);
 		return null;
-	}
-
-	/**
-	 * Restrict specified layers attributes to only those that are actually
-	 * found to be used. This does an exhaustive search and can be time-consuming. For large layers, consider
-	 * manually setting the properties instead.
-	 */
-	public DynamicLayerConfig restrictLayerProperties(Transaction tx, String name) {
-		return restrictLayerProperties(tx, name, null);
 	}
 
 	public List<String> getLayerNames(Transaction tx) {
 		return new ArrayList<>(getLayerMap(tx).keySet());
-	}
-
-	public List<Layer> getLayers(Transaction tx) {
-		return new ArrayList<>(getLayerMap(tx).values());
 	}
 
 	public Layer getLayer(Transaction tx, String name) {

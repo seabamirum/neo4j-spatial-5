@@ -19,14 +19,19 @@
  */
 package org.neo4j.gis.spatial.index;
 
-import org.neo4j.gis.spatial.Constants;
-import org.neo4j.gis.spatial.Layer;
-import org.neo4j.gis.spatial.filter.SearchRecords;
+import static org.neo4j.gis.spatial.Constants.INDEX_TYPE_RTREE;
+
+import java.util.List;
+import org.neo4j.gis.spatial.SpatialDatabaseRecord;
 import org.neo4j.gis.spatial.rtree.RTreeIndex;
-import org.neo4j.gis.spatial.rtree.SpatialIndexVisitor;
-import org.neo4j.gis.spatial.rtree.filter.SearchFilter;
 import org.neo4j.graphdb.Node;
 import org.neo4j.graphdb.Transaction;
+import org.neo4j.spatial.api.SearchFilter;
+import org.neo4j.spatial.api.SpatialRecords;
+import org.neo4j.spatial.api.index.IndexManager;
+import org.neo4j.spatial.api.index.LayerTreeIndexReader;
+import org.neo4j.spatial.api.index.SpatialIndexVisitor;
+import org.neo4j.spatial.api.layer.Layer;
 
 /**
  * The RTreeIndex is the first and still standard index for Neo4j Spatial. It
@@ -35,17 +40,18 @@ import org.neo4j.graphdb.Transaction;
  * wrapped with modifying search functions to that custom classes can be used to
  * perform filtering searches on the tree.
  */
-public class LayerRTreeIndex extends RTreeIndex implements LayerTreeIndexReader, Constants {
+public class LayerRTreeIndex extends RTreeIndex implements LayerTreeIndexReader {
 
 	private Layer layer;
 
 	@Override
-	public void init(Transaction tx, IndexManager indexManager, Layer layer) {
-		init(tx, layer, 100);
+	public List<String> getIdentifiers() {
+		return List.of(INDEX_TYPE_RTREE, "org.neo4j.gis.spatial.index.LayerRTreeIndex");
 	}
 
-	public void init(Transaction tx, Layer layer, int maxNodeReferences) {
-		super.init(tx, layer.getLayerNode(tx), layer.getGeometryEncoder(), maxNodeReferences);
+	@Override
+	public void init(Transaction tx, IndexManager indexManager, Layer layer, boolean readOnly) {
+		super.init(tx, layer.getLayerNode(tx), layer.getGeometryEncoder(), 100, readOnly);
 		this.layer = layer;
 	}
 
@@ -60,8 +66,8 @@ public class LayerRTreeIndex extends RTreeIndex implements LayerTreeIndexReader,
 	}
 
 	@Override
-	public SearchRecords search(Transaction tx, SearchFilter filter) {
-		return new SearchRecords(layer, searchIndex(tx, filter));
+	public SpatialRecords search(Transaction tx, SearchFilter filter) {
+		return new SpatialRecords(layer, searchIndex(tx, filter), SpatialDatabaseRecord::new);
 	}
 
 }

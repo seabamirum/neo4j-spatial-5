@@ -19,6 +19,7 @@
  */
 package org.neo4j.gis.spatial;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.neo4j.configuration.GraphDatabaseSettings.DEFAULT_DATABASE_NAME;
 
@@ -36,6 +37,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.function.Function;
+import java.util.logging.Logger;
 import org.junit.jupiter.api.Test;
 import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.Envelope;
@@ -45,18 +47,29 @@ import org.locationtech.jts.geom.impl.CoordinateArraySequence;
 import org.locationtech.jts.simplify.TopologyPreservingSimplifier;
 import org.neo4j.dbms.api.DatabaseManagementService;
 import org.neo4j.dbms.api.DatabaseManagementServiceBuilder;
-import org.neo4j.gis.spatial.index.IndexManager;
-import org.neo4j.gis.spatial.osm.OSMImporter;
+import org.neo4j.gis.spatial.functions.SpatialFunctions;
+import org.neo4j.gis.spatial.index.IndexManagerImpl;
 import org.neo4j.gis.spatial.pipes.GeoPipeline;
 import org.neo4j.gis.spatial.pipes.processing.OrthodromicDistance;
+import org.neo4j.gis.spatial.procedures.SpatialProcedures;
 import org.neo4j.graphdb.GraphDatabaseService;
 import org.neo4j.graphdb.Node;
 import org.neo4j.graphdb.Transaction;
 import org.neo4j.graphdb.config.Setting;
 import org.neo4j.internal.kernel.api.security.SecurityContext;
 import org.neo4j.kernel.internal.GraphDatabaseAPI;
+import org.neo4j.spatial.api.layer.Layer;
+import org.neo4j.spatial.testutils.Neo4jTestCase;
+import org.neo4j.spatial.testutils.SpatialTestUtils;
 
-public class TestIntersectsPathQueries {
+public class TestIntersectsPathQueries extends Neo4jTestCase {
+
+	private static final Logger LOGGER = Logger.getLogger(TestIntersectsPathQueries.class.getName());
+
+	@Override
+	protected List<Class<?>> loadProceduresAndFunctions() {
+		return List.of(SpatialFunctions.class, SpatialProcedures.class);
+	}
 
 	/**
 	 * This test case is designed to capture the conditions described in the bug
@@ -75,7 +88,6 @@ public class TestIntersectsPathQueries {
 	 */
 	@Test
 	public void testPointSetGeoptimaIntersection() throws InterruptedException {
-		String osmPath = "albert/osm/massachusetts.highway.osm";
 		String shpPath = "albert/shp/massachusetts_highway.shp";
 		String dbRoot = "target/geoptima";
 		String dbName = "massachusetts.highway.db";
@@ -90,19 +102,14 @@ public class TestIntersectsPathQueries {
 					"No database[" + dbName + "] but found shp[" + shpPath + "] - importing before running test");
 			importShapefileDatabase(shpPath, dbRoot, dbName, layerName);
 			runTestPointSetGeoptimaIntersection(tracePath, dbRoot, dbName, layerName, false);
-		} else if ((new File(osmPath)).exists()) {
-			System.out.println(
-					"No database[" + dbName + "] but found osm[" + osmPath + "] - importing before running test");
-			importOSMDatabase(osmPath, dbRoot, dbName, layerName);
-			runTestPointSetGeoptimaIntersection(tracePath, dbRoot, dbName, layerName, false);
 		} else {
-			System.out.println("No database[" + dbName + "] or osm[" + osmPath + "] - cannot run test");
+			System.out.println("No database[" + dbName + "] - cannot run test");
 		}
 	}
 
 	private static void importShapefileDatabase(String shpPath, String dbRoot, String dbName, String layerName) {
 		withDatabase(dbRoot, dbName, Neo4jTestCase.LARGE_CONFIG, graphDb -> {
-			ShapefileImporter importer = new ShapefileImporter(graphDb, new ConsoleListener(), 10000, true);
+			ShapefileImporter importer = new ShapefileImporter(graphDb, new LogListener(LOGGER), 10000, true);
 			importer.setFilterEnvelope(makeFilterEnvelope());
 			try {
 				importer.importFile(shpPath, layerName, StandardCharsets.UTF_8);
@@ -118,37 +125,6 @@ public class TestIntersectsPathQueries {
 		filterEnvelope.expandToInclude(new Coordinate(-71.00, 42.10));
 		filterEnvelope.expandToInclude(new Coordinate(-71.70, 42.50));
 		return filterEnvelope;
-	}
-
-	private static void importOSMDatabase(String osmPath, String dbRoot, String dbName, String layerName)
-			throws InterruptedException {
-		// TODO: Port to batch inserter in `github.com/neo4j-contrib/osm` project
-		OSMImporter importer = new OSMImporter(layerName, new ConsoleListener(), makeFilterEnvelope());
-		withDatabase(dbRoot, dbName, Neo4jTestCase.LARGE_CONFIG, graphDb -> {
-			try {
-				importer.importFile(graphDb, osmPath, 10000);
-				return null;
-			} catch (Exception e) {
-				return e;
-			}
-		});
-		// Weird hack to force GC on large loads
-		long start = System.currentTimeMillis();
-		if (System.currentTimeMillis() - start > 300000) {
-			for (int i = 0; i < 3; i++) {
-				System.gc();
-				Thread.sleep(1000);
-			}
-		}
-		withDatabase(dbRoot, dbName, Neo4jTestCase.LARGE_CONFIG, graphDb -> {
-			importer.reIndex(graphDb, 10000, false);
-			try {
-				TestOSMImport.checkOSMLayer(graphDb, layerName);
-				return null;
-			} catch (Exception e) {
-				return e;
-			}
-		});
 	}
 
 	private static class Performance {
@@ -210,11 +186,11 @@ public class TestIntersectsPathQueries {
 	}
 
 	@SuppressWarnings("SameParameterValue")
-	private static void runTestPointSetGeoptimaIntersection(String tracePath, String dbRoot, String dbName,
+	private void runTestPointSetGeoptimaIntersection(String tracePath, String dbRoot, String dbName,
 			String layerName, boolean testMultiPoint) {
 		withDatabase(dbRoot, dbName, Neo4jTestCase.NORMAL_CONFIG, graphDb -> {
 			SpatialDatabaseService spatial = new SpatialDatabaseService(
-					new IndexManager((GraphDatabaseAPI) graphDb, SecurityContext.AUTH_DISABLED));
+					new IndexManagerImpl((GraphDatabaseAPI) graphDb, SecurityContext.AUTH_DISABLED));
 			try {
 				int indexCount;
 				try (Transaction tx = graphDb.beginTx()) {
@@ -225,20 +201,21 @@ public class TestIntersectsPathQueries {
 							+ " relationships");
 
 					System.out.println(
-							"Searching for '" + layerName + "' in " + spatial.getLayerNames(tx).length + " layers:");
+							"Searching for '" + layerName + "' in " + spatial.getLayerNames(tx).size() + " layers:");
 					for (String name : spatial.getLayerNames(tx)) {
 						System.out.println("\t" + name);
 					}
 					//OSMLayer layer = (OSMLayer) spatial.getOrCreateLayer(layerName, OSMGeometryEncoder.class, OSMLayer.class);
-					Layer layer = spatial.getLayer(tx, layerName);
+					Layer layer = spatial.getLayer(tx, layerName, true);
 					assertNotNull(layer.getIndex(), "Layer index should not be null");
 					assertNotNull(layer.getIndex().getBoundingBox(tx), "Layer index envelope should not be null");
 					Envelope bbox = Utilities.fromNeo4jToJts(layer.getIndex().getBoundingBox(tx));
-					TestOSMImport.debugEnvelope(bbox, layerName, Constants.PROP_BBOX);
-					indexCount = TestOSMImport.checkIndexCount(tx, layer);
+					SpatialTestUtils.debugEnvelope(bbox, layerName, Constants.PROP_BBOX);
+					indexCount = SpatialTestUtils.checkIndexCount(tx, layer);
+					var features = tx.execute("spatial.getFeatureCount('" + layerName + "')").next().get("count");
+					assertEquals(features, indexCount);
 					tx.commit();
 				}
-				TestOSMImport.checkFeatureCount(graphDb, indexCount, layerName);
 
 				HashMap<String, Performance> performances = new LinkedHashMap<>();
 
@@ -268,7 +245,7 @@ public class TestIntersectsPathQueries {
 								+ coordinates.get(coordinates.size() - 1));
 				performance = new Performance("search points");
 				try (Transaction tx = graphDb.beginTx()) {
-					Layer layer = spatial.getLayer(tx, layerName);
+					Layer layer = spatial.getLayer(tx, layerName, true);
 					for (Coordinate coordinate : coordinates) {
 						List<Node> res = GeoPipeline.startNearestNeighborLatLonSearch(tx, layer, coordinate,
 										distanceInKm)
@@ -307,7 +284,7 @@ public class TestIntersectsPathQueries {
 					System.out.println("Searching for geometries near Geometry: " + gname);
 					performance = new Performance(gname);
 					try (Transaction tx = graphDb.beginTx()) {
-						Layer layer = spatial.getLayer(tx, layerName);
+						Layer layer = spatial.getLayer(tx, layerName, true);
 						List<Node> res = runSearch(GeoPipeline.startIntersectSearch(tx, layer, geometry), true);
 						performance.stop(res);
 						performances.put(performance.name, performance);

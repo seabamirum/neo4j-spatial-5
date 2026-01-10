@@ -23,19 +23,34 @@ import static org.hamcrest.CoreMatchers.is;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 
+import java.util.List;
+import java.util.logging.Logger;
 import org.hamcrest.MatcherAssert;
 import org.junit.jupiter.api.Test;
 import org.locationtech.jts.geom.Envelope;
 import org.locationtech.jts.geom.Geometry;
 import org.locationtech.jts.io.ParseException;
 import org.locationtech.jts.io.WKTReader;
-import org.neo4j.gis.spatial.index.IndexManager;
+import org.neo4j.gis.spatial.functions.SpatialFunctions;
+import org.neo4j.gis.spatial.index.IndexManagerImpl;
 import org.neo4j.gis.spatial.pipes.GeoPipeline;
+import org.neo4j.gis.spatial.procedures.SpatialProcedures;
 import org.neo4j.graphdb.Transaction;
 import org.neo4j.internal.kernel.api.security.SecurityContext;
 import org.neo4j.kernel.internal.GraphDatabaseAPI;
+import org.neo4j.spatial.api.SpatialRecord;
+import org.neo4j.spatial.api.layer.EditableLayer;
+import org.neo4j.spatial.api.layer.Layer;
+import org.neo4j.spatial.testutils.Neo4jTestCase;
 
 public class TestSpatialQueries extends Neo4jTestCase {
+
+	private static final Logger LOGGER = Logger.getLogger(TestSpatialQueries.class.getName());
+
+	@Override
+	protected List<Class<?>> loadProceduresAndFunctions() {
+		return List.of(SpatialFunctions.class, SpatialProcedures.class);
+	}
 
 	/**
 	 * This test case is designed to capture the conditions described in the bug
@@ -48,12 +63,12 @@ public class TestSpatialQueries extends Neo4jTestCase {
 	public void testSearchClosestWithShortLongLineStrings() throws ParseException {
 		String layerName = "test";
 		SpatialDatabaseService spatial = new SpatialDatabaseService(
-				new IndexManager((GraphDatabaseAPI) graphDb(), SecurityContext.AUTH_DISABLED));
+				new IndexManagerImpl((GraphDatabaseAPI) graphDb(), SecurityContext.AUTH_DISABLED));
 		Geometry shortLineString;
 		Geometry longLineString;
 		Geometry point;
 		try (Transaction tx = graphDb().beginTx()) {
-			EditableLayer layer = spatial.getOrCreateEditableLayer(tx, layerName, "WKT", null);
+			EditableLayer layer = spatial.getOrCreateEditableLayer(tx, layerName, "WKT", null, false);
 			WKTReader wkt = new WKTReader(layer.getGeometryFactory());
 			shortLineString = wkt.read("LINESTRING(16.3493032 48.199882,16.3479487 48.1997337)");
 			longLineString = wkt.read(
@@ -61,35 +76,35 @@ public class TestSpatialQueries extends Neo4jTestCase {
 			point = wkt.read("POINT(16.348243 48.199678)");
 			layer.add(tx, shortLineString);
 			layer.add(tx, longLineString);
+			layer.finalizeTransaction(tx);
 			tx.commit();
 		}
 
 		// First calculate the distances explicitly
 		Geometry closestGeom = null;
 		double closestDistance = Double.MAX_VALUE;
-		System.out.println("Calculating explicit distance to the point " + point + ":");
+		LOGGER.fine("Calculating explicit distance to the point " + point + ":");
 		for (Geometry geom : new Geometry[]{shortLineString, longLineString}) {
 			double distance = point.distance(geom);
-			System.out.println("\tDistance " + distance + " to " + geom);
+			LOGGER.fine("\tDistance " + distance + " to " + geom);
 			if (distance < closestDistance) {
 				closestDistance = distance;
 				closestGeom = geom;
 			}
 		}
 		assertNotNull(closestGeom, "Expected to find a clistestGeom");
-		System.out.println("Found closest: " + closestGeom);
-		System.out.println();
+		LOGGER.fine("Found closest: " + closestGeom);
 
 		// Now use the SearchClosest class to perform the search for the closest
-		System.out.println("Searching for geometries close to " + point);
+		LOGGER.fine("Searching for geometries close to " + point);
 		GeoPipeline pipeline;
 		try (Transaction tx = graphDb().beginTx()) {
-			Layer layer = spatial.getLayer(tx, layerName);
+			Layer layer = spatial.getLayer(tx, layerName, true);
 			pipeline = GeoPipeline.startNearestNeighborSearch(tx, layer, point.getCoordinate(), 100)
 					.sort("Distance")
 					.getMin("Distance");
 			for (SpatialRecord result : pipeline) {
-				System.out.println("\tGot search result: " + result);
+				LOGGER.fine("\tGot search result: " + result);
 				assertEquals(closestGeom.toString(), result.getGeometry().toString(), "Did not find the closest");
 			}
 			tx.commit();
@@ -97,7 +112,7 @@ public class TestSpatialQueries extends Neo4jTestCase {
 
 		// Repeat with an envelope
 		try (Transaction tx = graphDb().beginTx()) {
-			Layer layer = spatial.getLayer(tx, layerName);
+			Layer layer = spatial.getLayer(tx, layerName, true);
 			Envelope env = new Envelope(point.getCoordinate().x, point.getCoordinate().x, point.getCoordinate().y,
 					point.getCoordinate().y);
 			env.expandToInclude(shortLineString.getEnvelopeInternal());
@@ -105,9 +120,9 @@ public class TestSpatialQueries extends Neo4jTestCase {
 			pipeline = GeoPipeline.startNearestNeighborSearch(tx, layer, point.getCoordinate(), env)
 					.sort("Distance")
 					.getMin("Distance");
-			System.out.println("Searching for geometries close to " + point + " within " + env);
+			LOGGER.fine("Searching for geometries close to " + point + " within " + env);
 			for (SpatialRecord result : pipeline) {
-				System.out.println("\tGot search result: " + result);
+				LOGGER.fine("\tGot search result: " + result);
 				assertEquals(closestGeom.toString(), result.getGeometry().toString(), "Did not find the closest");
 			}
 			tx.commit();
@@ -115,43 +130,31 @@ public class TestSpatialQueries extends Neo4jTestCase {
 
 		// Repeat with a buffer big enough to work
 		try (Transaction tx = graphDb().beginTx()) {
-			Layer layer = spatial.getLayer(tx, layerName);
+			Layer layer = spatial.getLayer(tx, layerName, true);
 			double buffer = 0.0001;
 			pipeline = GeoPipeline.startNearestNeighborSearch(tx, layer, point.getCoordinate(), buffer)
 					.sort("Distance")
 					.getMin("Distance");
-			System.out.println("Searching for geometries close to " + point + " within buffer " + buffer);
+			LOGGER.fine("Searching for geometries close to " + point + " within buffer " + buffer);
 			for (SpatialRecord result : pipeline) {
-				System.out.println("\tGot search result: " + result);
+				LOGGER.fine("\tGot search result: " + result);
 				assertEquals(closestGeom.toString(), result.getGeometry().toString(), "Did not find the closest");
 			}
 			tx.commit();
 		}
 
-		// Repeat with a buffer too small to work correctly
-		//TODO: Since the new Envelope class in graph-collections seems to not have the same bug as the old JTS Envelope, this test case no longer works. We should think of a new test case.
-//		buffer = 0.00001;
-//		closest = new SearchClosest(point, buffer);
-//		System.out.println("Searching for geometries close to " + point + " within buffer " + buffer);
-//		layer.getIndex().executeSearch(closest);
-//		for (SpatialDatabaseRecord result : closest.getExtendedResults()) {
-//			System.out.println("\tGot search result: " + result);
-//			// NOTE the test below is negative, because the buffer was badly chosen
-//			assertThat("Unexpectedly found the closest", result.getGeometry().toString(), is(not(closestGeom.toString())));
-//		}
-
 		// Repeat with the new limit API
 		try (Transaction tx = graphDb().beginTx()) {
-			Layer layer = spatial.getLayer(tx, layerName);
+			Layer layer = spatial.getLayer(tx, layerName, true);
 			int limit = 10;
 			pipeline = GeoPipeline.startNearestNeighborSearch(tx, layer, point.getCoordinate(), limit)
 					.sort("Distance")
 					.getMin("Distance");
-			System.out.println(
+			LOGGER.fine(
 					"Searching for geometries close to " + point + " within automatic window designed to get about "
 							+ limit + " geometries");
 			for (SpatialRecord result : pipeline) {
-				System.out.println("\tGot search result: " + result);
+				LOGGER.fine("\tGot search result: " + result);
 				MatcherAssert.assertThat("Did not find the closest", result.getGeometry().toString(),
 						is(closestGeom.toString()));
 			}

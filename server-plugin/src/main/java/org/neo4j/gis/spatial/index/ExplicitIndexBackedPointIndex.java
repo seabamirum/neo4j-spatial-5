@@ -23,20 +23,23 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
-import org.neo4j.gis.spatial.Layer;
-import org.neo4j.gis.spatial.filter.SearchRecords;
-import org.neo4j.gis.spatial.rtree.Envelope;
-import org.neo4j.gis.spatial.rtree.EnvelopeDecoder;
-import org.neo4j.gis.spatial.rtree.Listener;
-import org.neo4j.gis.spatial.rtree.TreeMonitor;
-import org.neo4j.gis.spatial.rtree.filter.SearchFilter;
-import org.neo4j.gis.spatial.rtree.filter.SearchResults;
+import org.neo4j.gis.spatial.SpatialDatabaseRecord;
 import org.neo4j.graphdb.Label;
 import org.neo4j.graphdb.Node;
 import org.neo4j.graphdb.NotFoundException;
 import org.neo4j.graphdb.Relationship;
 import org.neo4j.graphdb.Transaction;
 import org.neo4j.kernel.api.KernelTransaction;
+import org.neo4j.spatial.api.Envelope;
+import org.neo4j.spatial.api.EnvelopeDecoder;
+import org.neo4j.spatial.api.SearchFilter;
+import org.neo4j.spatial.api.SearchResults;
+import org.neo4j.spatial.api.SpatialRecords;
+import org.neo4j.spatial.api.index.IndexManager;
+import org.neo4j.spatial.api.index.SpatialIndexWriter;
+import org.neo4j.spatial.api.layer.Layer;
+import org.neo4j.spatial.api.monitoring.ProgressListener;
+import org.neo4j.spatial.api.monitoring.TreeMonitor;
 
 /**
  * 2D Point data can be indexed against a 1D backing index using a 2D->1D mapper.
@@ -52,7 +55,7 @@ import org.neo4j.kernel.api.KernelTransaction;
  *
  * @param <E> either a String or a Long depending on whether the index is geohash or space-filling curve.
  */
-public abstract class ExplicitIndexBackedPointIndex<E> implements LayerIndexReader, SpatialIndexWriter {
+public abstract class ExplicitIndexBackedPointIndex<E> implements SpatialIndexWriter {
 
 	protected Layer layer;
 	private PropertyEncodingNodeIndex<E> index;
@@ -61,7 +64,7 @@ public abstract class ExplicitIndexBackedPointIndex<E> implements LayerIndexRead
 	protected abstract String indexTypeName();
 
 	@Override
-	public void init(Transaction tx, IndexManager indexManager, Layer layer) {
+	public void init(Transaction tx, IndexManager indexManager, Layer layer, boolean readOnly) {
 		this.layer = layer;
 		String indexName = "_SpatialIndex_" + indexTypeName() + "_" + layer.getName();
 		Label label = Label.label("SpatialIndex_" + indexTypeName() + "_" + layer.getName());
@@ -75,13 +78,8 @@ public abstract class ExplicitIndexBackedPointIndex<E> implements LayerIndexRead
 	}
 
 	@Override
-	public SearchRecords search(Transaction tx, SearchFilter filter) {
-		return new SearchRecords(layer, searchIndex(tx, filter));
-	}
-
-	@Override
-	public void add(Transaction tx, Node geomNode) {
-		index.add(geomNode, getIndexValueFor(tx, geomNode));
+	public SpatialRecords search(Transaction tx, SearchFilter filter) {
+		return new SpatialRecords(layer, searchIndex(tx, filter), SpatialDatabaseRecord::new);
 	}
 
 	protected abstract E getIndexValueFor(Transaction tx, Node geomNode);
@@ -89,7 +87,7 @@ public abstract class ExplicitIndexBackedPointIndex<E> implements LayerIndexRead
 	@Override
 	public void add(Transaction tx, List<Node> geomNodes) {
 		for (Node node : geomNodes) {
-			add(tx, node);
+			index.add(node, getIndexValueFor(tx, node));
 		}
 	}
 
@@ -116,7 +114,7 @@ public abstract class ExplicitIndexBackedPointIndex<E> implements LayerIndexRead
 	}
 
 	@Override
-	public void removeAll(Transaction tx, boolean deleteGeomNodes, Listener monitor) {
+	public void removeAll(Transaction tx, boolean deleteGeomNodes, ProgressListener monitor) {
 		if (deleteGeomNodes) {
 			for (Node node : getAllIndexedNodes(tx)) {
 				remove(tx, node.getElementId(), true, true);
@@ -126,7 +124,7 @@ public abstract class ExplicitIndexBackedPointIndex<E> implements LayerIndexRead
 	}
 
 	@Override
-	public void clear(Transaction tx, Listener monitor) {
+	public void clear(Transaction tx, ProgressListener monitor) {
 		removeAll(tx, false, monitor);
 	}
 

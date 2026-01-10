@@ -19,7 +19,11 @@
  */
 package org.neo4j.gis.spatial.encoders;
 
+import static org.neo4j.gis.spatial.Constants.PROP_TYPE;
+
 import java.util.Arrays;
+import java.util.List;
+import java.util.Set;
 import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.Geometry;
 import org.locationtech.jts.geom.LineString;
@@ -37,6 +41,11 @@ public class NativePointsEncoder extends AbstractGeometryEncoder implements Conf
 
 	private String property = "geometry";
 	private Neo4jCRS crs = Neo4jCRS.findCRS("WGS-84");
+
+	@Override
+	public List<String> getIdentifiers() {
+		return List.of("NativePointsEncoder", "org.neo4j.gis.spatial.encoders.NativePointsEncoder");
+	}
 
 	@Override
 	protected void encodeGeometryShape(Transaction tx, Geometry geometry, Entity container) {
@@ -102,5 +111,10 @@ public class NativePointsEncoder extends AbstractGeometryEncoder implements Conf
 	public String getSignature() {
 		return "NativePointEncoder(geometry='" + property + "', bbox='" + bboxProperty + "', crs=" + crs.getCode()
 				+ ")";
+	}
+
+	@Override
+	public Set<String> getEncoderProperties() {
+		return Set.of(bboxProperty, property, PROP_TYPE);
 	}
 }

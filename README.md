@@ -14,6 +14,9 @@ This means that Neo4j Spatial 5.19.0 is build against Neo4j 5.19, and so on.
 ## Installation
 
 1. Copy the desired neo4j-spatial-server-plugin-x.x.x-with-dependencies.jar from the [release page](https://github.com/neo4j-contrib/spatial/releases) to your neo4j plugin directory.
+
+   NOTE: OpenStreetMap (OSM) features are shipped in a separate, optional plugin JAR (`neo4j-spatial-osm-server-plugin-x.x.x-with-dependencies.jar`). To enable OSM-specific imports and endpoints, add that JAR along with the main server-plugin to `$NEO4J_HOME/plugins` and restart Neo4j.
+
 2. set up your database with the following configuration in your `neo4j.conf` file:
 
     ```
@@ -22,7 +25,7 @@ This means that Neo4j Spatial 5.19.0 is build against Neo4j 5.19, and so on.
 
    NOTE: If you're concerned about the security risks of unrestricted access, we recommend reviewing the code to assess
    the level of risk for your use case. For example, the method 
-   [`IndexAccessMode.withIndexCreate`](/src/main/java/org/neo4j/gis/spatial/index/IndexManager.java#L42) grants index
+   [`IndexAccessMode.withIndexCreate`](/server-plugin/src/main/java/org/neo4j/gis/spatial/index/IndexManager.java#L42) grants index
    creation capabilities within the security model. This allows users without index creation privileges to generate the
    required spatial support indexes. This behavior was not intentionally designed to bypass security but was necessary
    due to Neo4j’s security model, where procedures with WRITE mode are not permitted to create indexes.
@@ -44,7 +47,7 @@ The key concepts of this library include:
 * Multiple CoordinationReferenceSystem support using GeoTools
 * Support the concept of multiple geographic layers, each with its own CRS and Index
 * Include an index capable of searching for complex geometries (in-graph RTree index)
-* Support import and export in a number of known formats (e.g. Shapefile and OSM)
+* Support import and export in a number of known formats (e.g. Shapefile and OSM) (Note: OSM support is optional and provided by the separate `neo4j-spatial-osm-server-plugin-x.x.x-with-dependencies` JAR)
 * Embed the library and Neo4j within GIS tools like uDig and GeoServer
 
 Some key features include:
@@ -139,6 +142,8 @@ This is more complex because the current OSMImporter class runs in two phases, t
 the database. There is ongoing work to allow for a non-batch-inserter on the entire process, and possibly when you have
 read this that will already be available. Refer to the unit tests in classes TestDynamicLayers and TestOSMImport for the
 latest code for importing OSM data. At the time of writing the following worked:
+
+Note: OSM import classes and the `OSMImporter` now live in the optional OSM plugin JAR. When running the examples below that reference `org.neo4j.spatial.osm.server.plugin.OSMImporter`, ensure that `neo4j-spatial-osm-server-plugin-x.x.x-with-dependencies.jar` is present on the runtime classpath or placed into Neo4j's `plugins` (or `lib` for older releases) so the classes are available.
 
 ~~~java
 OSMImporter importer = new OSMImporter("sweden");
@@ -262,7 +267,7 @@ mvn jetty:run
 		<dependency>
 			<groupId>org.neo4j</groupId>
 			<artifactId>neo4j-spatial</artifactId>
-			<version>5.26.0</version>
+			<version>2025.10.0</version>
 		</dependency>
 	</dependencies>
 </profile>
@@ -337,7 +342,7 @@ mvn clean compile
 
 ~~~bash
 mvn dependency:copy-dependencies
-java -cp target/classes:target/dependency/* org.neo4j.gis.spatial.osm.OSMImporter osm-db two-street.osm 
+java -cp target/classes:target/dependency/* org.neo4j.spatial.osm.server.plugin.OSMImporter osm-db two-street.osm 
 ~~~
 
 _Note: On windows remember to separate the classpath with ';' instead of ':'._
@@ -352,7 +357,7 @@ the above approach is most certainly the easiest way to do this.
 ### Run using 'mvn exec:java' ###
 
 ~~~bash
-mvn exec:java -Dexec.mainClass=org.neo4j.gis.spatial.osm.OSMImporter -Dexec.args="osm-db two-street.osm"
+mvn exec:java -Dexec.mainClass=org.neo4j.spatial.osm.server.plugin.OSMImporter -Dexec.args="osm-db two-street.osm"
 ~~~
 
 Note that the OSMImporter cannot re-import the same data multiple times,

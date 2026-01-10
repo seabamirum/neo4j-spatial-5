@@ -19,22 +19,33 @@
  */
 package org.neo4j.gis.spatial;
 
+import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.GeometryFactory;
-import org.neo4j.gis.spatial.index.IndexManager;
+import org.neo4j.gis.spatial.encoders.WKTGeometryEncoder;
+import org.neo4j.gis.spatial.functions.SpatialFunctions;
+import org.neo4j.gis.spatial.index.IndexManagerImpl;
+import org.neo4j.gis.spatial.procedures.SpatialProcedures;
 import org.neo4j.graphdb.Transaction;
 import org.neo4j.internal.kernel.api.security.SecurityContext;
 import org.neo4j.kernel.internal.GraphDatabaseAPI;
+import org.neo4j.spatial.api.layer.EditableLayer;
+import org.neo4j.spatial.testutils.Neo4jTestCase;
 
 public class TestRemove extends Neo4jTestCase {
 
 	private static final String layerName = "TestRemove";
 
+	@Override
+	protected List<Class<?>> loadProceduresAndFunctions() {
+		return List.of(SpatialFunctions.class, SpatialProcedures.class);
+	}
+
 	@Test
 	public void testAddMoreThanMaxNodeRefThenDeleteAll() {
 		SpatialDatabaseService spatial = new SpatialDatabaseService(
-				new IndexManager((GraphDatabaseAPI) graphDb(), SecurityContext.AUTH_DISABLED));
+				new IndexManagerImpl((GraphDatabaseAPI) graphDb(), SecurityContext.AUTH_DISABLED));
 
 		try (Transaction tx = graphDb().beginTx()) {
 			spatial.createLayer(tx, layerName, WKTGeometryEncoder.class, EditableLayerImpl.class, "");
@@ -46,24 +57,22 @@ public class TestRemove extends Neo4jTestCase {
 		String[] ids = new String[rtreeMaxNodeReferences + 1];
 
 		try (Transaction tx = graphDb().beginTx()) {
-			EditableLayer layer = (EditableLayer) spatial.getLayer(tx, layerName);
+			EditableLayer layer = (EditableLayer) spatial.getLayer(tx, layerName, false);
 			GeometryFactory geomFactory = layer.getGeometryFactory();
 			for (int i = 0; i < ids.length; i++) {
-				ids[i] = layer.add(tx, geomFactory.createPoint(new Coordinate(i, i))).getNodeId();
+				ids[i] = layer.add(tx, geomFactory.createPoint(new Coordinate(i, i))).getId();
 			}
+			layer.finalizeTransaction(tx);
 			tx.commit();
 		}
 
-		Neo4jTestUtils.debugIndexTree(graphDb(), layerName);
-
 		try (Transaction tx = graphDb().beginTx()) {
-			EditableLayer layer = (EditableLayer) spatial.getLayer(tx, layerName);
+			EditableLayer layer = (EditableLayer) spatial.getLayer(tx, layerName, false);
 			for (String id : ids) {
 				layer.delete(tx, id);
 			}
+			layer.finalizeTransaction(tx);
 			tx.commit();
 		}
-
-		Neo4jTestUtils.debugIndexTree(graphDb(), layerName);
 	}
 }

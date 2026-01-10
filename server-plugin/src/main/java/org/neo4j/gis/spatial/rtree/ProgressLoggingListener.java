@@ -19,16 +19,17 @@
  */
 package org.neo4j.gis.spatial.rtree;
 
-import java.io.PrintStream;
 import java.util.Locale;
+import java.util.logging.Logger;
 import org.neo4j.logging.Level;
 import org.neo4j.logging.Log;
+import org.neo4j.spatial.api.monitoring.ProgressListener;
 
 /**
  * This listener logs percentage progress to the specified PrintStream or Logger based on a timer,
  * never logging more frequently than the specified number of ms.
  */
-public class ProgressLoggingListener implements Listener {
+public class ProgressLoggingListener implements ProgressListener {
 
 	private final ProgressLog out;
 	private final String name;
@@ -43,9 +44,9 @@ public class ProgressLoggingListener implements Listener {
 		void log(String line);
 	}
 
-	public ProgressLoggingListener(String name, final PrintStream out) {
+	public ProgressLoggingListener(String name, final Logger logger) {
 		this.name = name;
-		this.out = out::println;
+		this.out = logger::info;
 	}
 
 	public ProgressLoggingListener(String name, Log log, Level level) {

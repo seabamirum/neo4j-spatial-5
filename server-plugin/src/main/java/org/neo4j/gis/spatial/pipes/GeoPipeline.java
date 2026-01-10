@@ -20,14 +20,13 @@
 package org.neo4j.gis.spatial.pipes;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Comparator;
 import java.util.Iterator;
 import java.util.List;
 import java.util.NoSuchElementException;
+import java.util.Set;
 import org.geotools.api.feature.simple.SimpleFeature;
 import org.geotools.api.feature.simple.SimpleFeatureType;
-import org.geotools.data.neo4j.Neo4jFeatureBuilder;
 import org.geotools.feature.FeatureCollection;
 import org.geotools.feature.collection.AbstractFeatureCollection;
 import org.geotools.filter.text.cql2.CQLException;
@@ -36,12 +35,10 @@ import org.locationtech.jts.geom.Coordinate;
 import org.locationtech.jts.geom.Envelope;
 import org.locationtech.jts.geom.Geometry;
 import org.locationtech.jts.geom.util.AffineTransformation;
-import org.neo4j.gis.spatial.Layer;
-import org.neo4j.gis.spatial.SpatialDatabaseRecord;
-import org.neo4j.gis.spatial.SpatialRecord;
 import org.neo4j.gis.spatial.SpatialTopologyUtils;
+import org.neo4j.gis.spatial.feature.Neo4jServerFeatureBuilder;
+import org.neo4j.gis.spatial.filter.SearchCQL;
 import org.neo4j.gis.spatial.filter.SearchIntersectWindow;
-import org.neo4j.gis.spatial.filter.SearchRecords;
 import org.neo4j.gis.spatial.pipes.filtering.FilterCQL;
 import org.neo4j.gis.spatial.pipes.filtering.FilterContain;
 import org.neo4j.gis.spatial.pipes.filtering.FilterCover;
@@ -106,9 +103,12 @@ import org.neo4j.gis.spatial.pipes.processing.Union;
 import org.neo4j.gis.spatial.pipes.processing.UnionAll;
 import org.neo4j.gis.spatial.pipes.processing.WellKnownText;
 import org.neo4j.gis.spatial.rtree.filter.SearchAll;
-import org.neo4j.gis.spatial.rtree.filter.SearchFilter;
 import org.neo4j.graphdb.Node;
 import org.neo4j.graphdb.Transaction;
+import org.neo4j.spatial.api.SearchFilter;
+import org.neo4j.spatial.api.SpatialRecord;
+import org.neo4j.spatial.api.SpatialRecords;
+import org.neo4j.spatial.api.layer.Layer;
 
 public class GeoPipeline extends Pipeline<GeoPipeFlow, GeoPipeFlow> {
 
@@ -118,11 +118,11 @@ public class GeoPipeline extends Pipeline<GeoPipeFlow, GeoPipeFlow> {
 		this.layer = layer;
 	}
 
-	protected static IdentityPipe<GeoPipeFlow> createStartPipe(List<SpatialDatabaseRecord> records) {
+	protected static IdentityPipe<GeoPipeFlow> createStartPipe(Iterable<SpatialRecord> records) {
 		return createStartPipe(records.iterator());
 	}
 
-	protected static IdentityPipe<GeoPipeFlow> createStartPipe(final Iterator<SpatialDatabaseRecord> records) {
+	protected static IdentityPipe<GeoPipeFlow> createStartPipe(final Iterator<SpatialRecord> records) {
 		final Iterator<GeoPipeFlow> start = new Iterator<>() {
 			@Override
 			public boolean hasNext() {
@@ -149,7 +149,7 @@ public class GeoPipeline extends Pipeline<GeoPipeFlow, GeoPipeFlow> {
 	/**
 	 * Start a new pipeline with an iterator of SpatialDatabaseRecords
 	 */
-	public static GeoPipeline start(Layer layer, Iterator<SpatialDatabaseRecord> records) {
+	public static GeoPipeline start(Layer layer, Iterator<SpatialRecord> records) {
 		GeoPipeline pipeline = new GeoPipeline(layer);
 		return pipeline.add(createStartPipe(records));
 	}
@@ -157,15 +157,15 @@ public class GeoPipeline extends Pipeline<GeoPipeFlow, GeoPipeFlow> {
 	/**
 	 * Start a new pipeline with a list of SpatialDatabaseRecords
 	 */
-	public static GeoPipeline start(Layer layer, List<SpatialDatabaseRecord> records) {
+	public static GeoPipeline start(Layer layer, Iterable<SpatialRecord> records) {
 		GeoPipeline pipeline = new GeoPipeline(layer);
 		return pipeline.add(createStartPipe(records));
 	}
 
 	/**
-	 * Start a new pipeline that will iterate through a SearchRecords
+	 * Start a new pipeline that will iterate through a SpatialRecords
 	 */
-	public static GeoPipeline start(Layer layer, SearchRecords records) {
+	public static GeoPipeline start(Layer layer, SpatialRecords records) {
 		GeoPipeline pipeline = new GeoPipeline(layer);
 		return pipeline.add(createStartPipe(records));
 	}
@@ -182,6 +182,13 @@ public class GeoPipeline extends Pipeline<GeoPipeFlow, GeoPipeFlow> {
 	 */
 	public static GeoPipeline start(final Transaction tx, Layer layer) {
 		return start(tx, layer, new SearchAll());
+	}
+
+	/**
+	 * Start a new pipeline that will iterate
+	 */
+	public static GeoPipeline startECQL(final Transaction tx, Layer layer, String ecql) {
+		return start(tx, layer, new SearchCQL(tx, layer, ecql));
 	}
 
 	/**
@@ -371,7 +378,7 @@ public class GeoPipeline extends Pipeline<GeoPipeFlow, GeoPipeFlow> {
 	/**
 	 * @see CopyDatabaseRecordProperties
 	 */
-	public GeoPipeline copyDatabaseRecordProperties(Transaction tx, String[] keys) {
+	public GeoPipeline copyDatabaseRecordProperties(Transaction tx, Set<String> keys) {
 		return addPipe(new CopyDatabaseRecordProperties(tx, keys));
 	}
 
@@ -825,12 +832,12 @@ public class GeoPipeline extends Pipeline<GeoPipeFlow, GeoPipeFlow> {
 
 	public FeatureCollection<SimpleFeatureType, SimpleFeature> toStreamingFeatureCollection(final Transaction tx,
 			final Envelope bounds) {
-		return toStreamingFeatureCollection(tx, Neo4jFeatureBuilder.getTypeFromLayer(tx, layer), bounds);
+		return toStreamingFeatureCollection(tx, Neo4jServerFeatureBuilder.getTypeFromLayer(tx, layer), bounds);
 	}
 
 	public FeatureCollection<SimpleFeatureType, SimpleFeature> toStreamingFeatureCollection(final Transaction tx,
 			SimpleFeatureType featureType, final Envelope bounds) {
-		final Neo4jFeatureBuilder featureBuilder = Neo4jFeatureBuilder.fromLayer(tx, layer);
+		final Neo4jServerFeatureBuilder featureBuilder = Neo4jServerFeatureBuilder.fromLayer(tx, layer);
 		return new AbstractFeatureCollection(featureType) {
 			@Override
 			public int size() {
@@ -865,7 +872,7 @@ public class GeoPipeline extends Pipeline<GeoPipeFlow, GeoPipeFlow> {
 	}
 
 	public FeatureCollection<SimpleFeatureType, SimpleFeature> toFeatureCollection(final Transaction tx) {
-		return toFeatureCollection(tx, Neo4jFeatureBuilder.getTypeFromLayer(tx, layer));
+		return toFeatureCollection(tx, Neo4jServerFeatureBuilder.getTypeFromLayer(tx, layer));
 	}
 
 	public FeatureCollection<SimpleFeatureType, SimpleFeature> toFeatureCollection(final Transaction tx,
@@ -884,8 +891,8 @@ public class GeoPipeline extends Pipeline<GeoPipeFlow, GeoPipeFlow> {
 		final Iterator<GeoPipeFlow> recordsIterator = records.iterator();
 		final ReferencedEnvelope refBounds = new ReferencedEnvelope(bounds, layer.getCoordinateReferenceSystem(tx));
 
-		final Neo4jFeatureBuilder featureBuilder = new Neo4jFeatureBuilder(featureType,
-				Arrays.asList(layer.getExtraPropertyNames(tx)));
+		final Neo4jServerFeatureBuilder featureBuilder = new Neo4jServerFeatureBuilder(featureType,
+				layer.getExtraProperties(tx));
 		return new AbstractFeatureCollection(featureType) {
 			@Override
 			public int size() {
@@ -930,9 +937,9 @@ public class GeoPipeline extends Pipeline<GeoPipeFlow, GeoPipeFlow> {
 	 * Warning: GeoPipeline doesn't modify SpatialDatabaseRecords thus the geometries contained aren't those
 	 * transformed by the pipeline but the original ones.
 	 */
-	public List<SpatialDatabaseRecord> toSpatialDatabaseRecordList() {
+	public List<SpatialRecord> toSpatialDatabaseRecordList() {
 
-		List<SpatialDatabaseRecord> result = new ArrayList<>();
+		List<SpatialRecord> result = new ArrayList<>();
 
 		while (true) {
 			try {

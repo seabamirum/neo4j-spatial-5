@@ -20,17 +20,20 @@
 package org.neo4j.gis.spatial.rtree;
 
 import org.neo4j.gis.spatial.encoders.SimplePointEncoder;
+import org.neo4j.gis.spatial.index.LayerRTreeIndex;
 import org.neo4j.graphdb.Node;
 import org.neo4j.graphdb.Transaction;
+import org.neo4j.spatial.api.Envelope;
+import org.neo4j.spatial.api.monitoring.TreeMonitor.NodeWithEnvelope;
 
-public class TestRTreeIndex extends RTreeIndex {
+public class TestRTreeIndex extends LayerRTreeIndex {
 
 	// TODO: Rather pass tx into init after construction (bad pattern to pass tx to constructor, as if it will be saved)
 	public TestRTreeIndex(Transaction tx) {
-		init(tx, tx.createNode(), new SimplePointEncoder(), DEFAULT_MAX_NODE_REFERENCES);
+		init(tx, tx.createNode(), new SimplePointEncoder(), DEFAULT_MAX_NODE_REFERENCES, false);
 	}
 
-	public static RTreeIndex.NodeWithEnvelope makeChildIndexNode(Transaction tx, NodeWithEnvelope parent,
+	public NodeWithEnvelope makeChildIndexNode(Transaction tx, NodeWithEnvelope parent,
 			Envelope bbox) {
 		Node indexNode = tx.createNode();
 		setIndexNodeEnvelope(indexNode, bbox);
@@ -40,7 +43,7 @@ public class TestRTreeIndex extends RTreeIndex {
 		return new NodeWithEnvelope(indexNode, bbox);
 	}
 
-	public static void setIndexNodeEnvelope(NodeWithEnvelope indexNode) {
+	public void setIndexNodeEnvelope(NodeWithEnvelope indexNode) {
 		setIndexNodeEnvelope(indexNode.node, indexNode.envelope);
 	}
 

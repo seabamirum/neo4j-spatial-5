@@ -20,6 +20,7 @@
 package org.neo4j.gis.spatial;
 
 import org.neo4j.graphdb.Label;
+import org.neo4j.spatial.geotools.common.utilities.GeotoolsAdapter;
 
 /**
  * @author Davide Savazzi
@@ -30,13 +31,16 @@ public interface Constants {
 
 	String PROP_BBOX = "bbox";
 	String PROP_LAYER = "layer";
+	String PROP_PREFIX_EXTRA_PROP_V2 = "extraProp.";
 	String PROP_LAYERNODEEXTRAPROPS = "layerprops";
 	String PROP_CRS = "layercrs";
 	String PROP_GEOMENCODER = "geomencoder";
 	String PROP_INDEX_CLASS = "index_class";
+	String PROP_INDEX_TYPE = "index_type";
 	String PROP_GEOMENCODER_CONFIG = "geomencoder_config";
 	String PROP_INDEX_CONFIG = "index_config";
 	String PROP_LAYER_CLASS = "layer_class";
+	String PROP_LAYER_TYPE = "layer_type";
 
 	String PROP_TYPE = "gtype";
 	String PROP_QUERY = "query";
@@ -67,8 +71,8 @@ public interface Constants {
 	int GTYPE_MULTILINESTRING = 5;
 	int GTYPE_MULTIPOLYGON = 6;
 
-	int SRID_COORDINATES_2D = 4326;
-	int SRID_COORDINATES_3D = 4979;
+	int SRID_COORDINATES_2D = GeotoolsAdapter.SRID_COORDINATES_2D;
+	int SRID_COORDINATES_3D = GeotoolsAdapter.SRID_COORDINATES_3D;
 
 	String INDEX_TYPE_RTREE = "rtree";
 	String INDEX_TYPE_GEOHASH = "geohash";

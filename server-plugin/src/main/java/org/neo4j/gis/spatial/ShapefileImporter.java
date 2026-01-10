@@ -24,9 +24,11 @@ import java.io.IOException;
 import java.nio.charset.Charset;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.List;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 import org.geotools.api.referencing.FactoryException;
 import org.geotools.api.referencing.crs.CoordinateReferenceSystem;
 import org.geotools.data.PrjFileReader;
@@ -42,25 +44,28 @@ import org.locationtech.jts.geom.Geometry;
 import org.locationtech.jts.geom.GeometryFactory;
 import org.neo4j.dbms.api.DatabaseManagementService;
 import org.neo4j.dbms.api.DatabaseManagementServiceBuilder;
-import org.neo4j.gis.spatial.index.IndexManager;
-import org.neo4j.gis.spatial.rtree.Listener;
+import org.neo4j.gis.spatial.encoders.WKBGeometryEncoder;
+import org.neo4j.gis.spatial.index.IndexManagerImpl;
 import org.neo4j.gis.spatial.rtree.NullListener;
 import org.neo4j.graphdb.GraphDatabaseService;
 import org.neo4j.graphdb.Node;
 import org.neo4j.graphdb.Transaction;
 import org.neo4j.internal.kernel.api.security.SecurityContext;
 import org.neo4j.kernel.internal.GraphDatabaseAPI;
+import org.neo4j.spatial.api.layer.Layer;
+import org.neo4j.spatial.api.monitoring.ProgressListener;
 
-public class ShapefileImporter implements Constants {
+public class ShapefileImporter {
 
+	private static final Logger LOGGER = Logger.getLogger(ShapefileImporter.class.getName());
 	private final int commitInterval;
 	private final boolean maintainGeometryOrder;
-	private final Listener monitor;
+	private final ProgressListener monitor;
 	private final GraphDatabaseService database;
 	private final SpatialDatabaseService spatialDatabase;
 	private Envelope filterEnvelope;
 
-	public ShapefileImporter(GraphDatabaseService database, Listener monitor, int commitInterval,
+	public ShapefileImporter(GraphDatabaseService database, ProgressListener monitor, int commitInterval,
 			boolean maintainGeometryOrder) {
 		this.maintainGeometryOrder = maintainGeometryOrder;
 		if (commitInterval < 1) {
@@ -69,7 +74,7 @@ public class ShapefileImporter implements Constants {
 		this.commitInterval = commitInterval;
 		this.database = database;
 		this.spatialDatabase = new SpatialDatabaseService(
-				new IndexManager((GraphDatabaseAPI) database, SecurityContext.AUTH_DISABLED));
+				new IndexManagerImpl((GraphDatabaseAPI) database, SecurityContext.AUTH_DISABLED));
 
 		if (monitor == null) {
 			monitor = new NullListener();
@@ -77,11 +82,11 @@ public class ShapefileImporter implements Constants {
 		this.monitor = monitor;
 	}
 
-	public ShapefileImporter(GraphDatabaseService database, Listener monitor, int commitInterval) {
+	public ShapefileImporter(GraphDatabaseService database, ProgressListener monitor, int commitInterval) {
 		this(database, monitor, commitInterval, false);
 	}
 
-	public ShapefileImporter(GraphDatabaseService database, Listener monitor) {
+	public ShapefileImporter(GraphDatabaseService database, ProgressListener monitor) {
 		this(database, monitor, 1000, false);
 	}
 
@@ -103,7 +108,7 @@ public class ShapefileImporter implements Constants {
 		EditableLayerImpl layer;
 		try (Transaction tx = database.beginTx()) {
 			layer = (EditableLayerImpl) spatialDatabase.getOrCreateLayer(tx, layerName, WKBGeometryEncoder.class,
-					layerClass, null);
+					layerClass, null, false);
 			tx.commit();
 		}
 		return importFile(dataset, layer, charset);
@@ -149,8 +154,6 @@ public class ShapefileImporter implements Constants {
 					}
 
 					layer.setGeometryType(tx, geometryType);
-
-					layer.mergeExtraPropertyNames(tx, fieldsName);
 					tx.commit();
 				}
 
@@ -158,8 +161,6 @@ public class ShapefileImporter implements Constants {
 				try {
 					Record record;
 					Geometry geometry;
-					Object[] values;
-					ArrayList<Object> fields = new ArrayList<>();
 					int recordCounter = 0;
 					int filterCounter = 0;
 					while (shpReader.hasNext() && dbfReader.hasNext()) {
@@ -171,29 +172,30 @@ public class ShapefileImporter implements Constants {
 									recordCounter++;
 									committedSinceLastNotification++;
 									try {
-										fields.clear();
 										geometry = (Geometry) record.shape();
 										if (filterEnvelope == null || filterEnvelope.intersects(
 												geometry.getEnvelopeInternal())) {
-											values = dbfReader.readEntry();
+											Object[] values = dbfReader.readEntry();
 
-											//convert Date to String
-											//necessary because Neo4j doesn't support Date properties on nodes
-											for (int k = 0; k < fieldsName.length - 1; k++) {
-												if (values[k] instanceof Date aux) {
-													values[k] = aux.toString();
+											var properties = new HashMap<String, Object>();
+											for (int k = 0; k < fieldsName.length; k++) {
+												String field = fieldsName[k];
+												Object value = k == 0 ? recordCounter : values[k - 1];
+												if (value instanceof Date aux) {
+													//convert Date to String
+													//necessary because Neo4j doesn't support Date properties on nodes
+													value = aux.toString();
 												}
+												properties.put(field, value);
 											}
 
-											fields.add(recordCounter);
-											Collections.addAll(fields, values);
 											if (geometry.isEmpty()) {
-												log("warn | found empty geometry in record " + recordCounter);
+												LOGGER.warning("found empty geometry in record " + recordCounter);
 											} else {
 												// TODO check geometry.isValid()
 												// ?
 												SpatialDatabaseRecord spatial_record = layer.add(tx, geometry,
-														fieldsName, fields.toArray(values));
+														properties);
 												added.add(spatial_record.getGeomNode());
 											}
 										} else {
@@ -201,16 +203,17 @@ public class ShapefileImporter implements Constants {
 										}
 									} catch (IllegalArgumentException e) {
 										// org.geotools.data.shapefile.shp.ShapefileReader.Record.shape() can throw this exception
-										log("warn | found invalid geometry: index=" + recordCounter, e);
+										LOGGER.log(java.util.logging.Level.WARNING,
+												"found invalid geometry: index=" + recordCounter, e);
 									}
 								}
 							}
 							monitor.worked(committedSinceLastNotification);
 							tx.commit();
 
-							log("info | inserted geometries: " + (recordCounter - filterCounter));
+							LOGGER.info("inserted geometries: " + (recordCounter - filterCounter));
 							if (filterCounter > 0) {
-								log("info | ignored " + filterCounter + "/" + recordCounter
+								LOGGER.info("ignored " + filterCounter + "/" + recordCounter
 										+ " geometries outside filter envelope: " + filterEnvelope);
 							}
 						}
@@ -226,7 +229,7 @@ public class ShapefileImporter implements Constants {
 		}
 
 		long stopTime = System.currentTimeMillis();
-		log("info | elapsed time in seconds: " + (1.0 * (stopTime - startTime) / 1000));
+		LOGGER.info("elapsed time in seconds: " + 1.0 * (stopTime - startTime) / 1000);
 		return added;
 	}
 
@@ -234,18 +237,9 @@ public class ShapefileImporter implements Constants {
 		try (PrjFileReader prjReader = new PrjFileReader(shpFiles.getReadChannel(ShpFileType.PRJ, shpReader))) {
 			return prjReader.getCoordinateReferenceSystem();
 		} catch (IOException | FactoryException e) {
-			e.printStackTrace();
+			LOGGER.log(Level.WARNING, "", e);
 			return null;
 		}
-	}
-
-	private static void log(String message) {
-		System.out.println(message);
-	}
-
-	private static void log(String message, Exception e) {
-		System.out.println(message);
-		e.printStackTrace();
 	}
 
 	public static void main(String[] args) throws Exception {
@@ -256,8 +250,8 @@ public class ShapefileImporter implements Constants {
 		int commitInterval = 1000;
 
 		if (args.length < 3 || args.length > 5) {
-			System.err.println("Parameters: neo4jDirectory database shapefile [layerName commitInterval]");
-			System.err.println(
+			LOGGER.warning("Parameters: neo4jDirectory database shapefile [layerName commitInterval]");
+			LOGGER.warning(
 					"\tNote: 'database' can only be something other than 'neo4j' in Neo4j Enterprise Edition.");
 			System.exit(1);
 		}

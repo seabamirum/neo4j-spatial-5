@@ -19,32 +19,118 @@
  */
 package org.neo4j.gis.spatial;
 
+import static org.neo4j.gis.spatial.Constants.GTYPE_MULTIPOLYGON;
+import static org.neo4j.gis.spatial.Constants.GTYPE_POINT;
+import static org.neo4j.gis.spatial.Constants.PROP_CRS;
+import static org.neo4j.gis.spatial.Constants.PROP_LAYERNODEEXTRAPROPS;
+import static org.neo4j.gis.spatial.Constants.PROP_PREFIX_EXTRA_PROP_V2;
+import static org.neo4j.gis.spatial.Constants.PROP_TYPE;
+
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import org.geotools.api.referencing.crs.CoordinateReferenceSystem;
 import org.locationtech.jts.geom.Geometry;
 import org.neo4j.graphdb.Node;
 import org.neo4j.graphdb.Transaction;
+import org.neo4j.spatial.api.encoder.GeometryEncoder;
+import org.neo4j.spatial.api.index.IndexManager;
+import org.neo4j.spatial.api.index.SpatialIndexWriter;
+import org.neo4j.spatial.api.layer.EditableLayer;
+import org.neo4j.spatial.api.monitoring.ProgressListener;
 
 public class EditableLayerImpl extends DefaultLayer implements EditableLayer {
+
+	protected SpatialIndexWriter indexWriter;
+	private final Map<String, Class<?>> seenProperties = new HashMap<>();
+
+	@Override
+	public List<String> getIdentifiers() {
+		return List.of("EditableLayer", "org.neo4j.gis.spatial.EditableLayerImpl");
+	}
+
+	@Override
+	public void initialize(
+			Transaction tx,
+			IndexManager indexManager,
+			String name,
+			GeometryEncoder geometryEncoder,
+			SpatialIndexWriter index,
+			Node layerNode,
+			boolean readOnly
+	) {
+		super.initialize(tx, indexManager, name, geometryEncoder, index, layerNode, readOnly);
+		indexWriter = index;
+	}
+
+	/**
+	 * Add the geometry encoded in the given Node. This causes the geometry to appear in the index.
+	 */
+	@Override
+	public SpatialDatabaseRecord add(Transaction tx, Node geomNode) {
+		checkWritable();
+		Geometry geometry = getGeometryEncoder().decodeGeometry(geomNode);
+
+		// add BBOX to Node if it's missing
+		getGeometryEncoder().ensureIndexable(geometry, geomNode);
+
+		return addToIndex(tx, geometry, geomNode);
+	}
+
+	@Override
+	public int addAll(Transaction tx, List<Node> geomNodes) {
+		checkWritable();
+		GeometryEncoder geometryEncoder = getGeometryEncoder();
+
+		for (Node geomNode : geomNodes) {
+			Geometry geometry = geometryEncoder.decodeGeometry(geomNode);
+			// add BBOX to Node if it's missing
+			geometryEncoder.encodeGeometry(tx, geometry, geomNode);
+			memorizeNodeMeta(geomNode);
+		}
+		indexWriter.add(tx, geomNodes);
+		return geomNodes.size();
+	}
 
 	/**
 	 * Add a geometry to this layer.
 	 */
 	@Override
 	public SpatialDatabaseRecord add(Transaction tx, Geometry geometry) {
-		return add(tx, geometry, null, null);
+		return add(tx, geometry, null);
 	}
 
 	/**
 	 * Add a geometry to this layer, including properties.
 	 */
 	@Override
-	public SpatialDatabaseRecord add(Transaction tx, Geometry geometry, String[] fieldsName, Object[] fields) {
-		Node geomNode = addGeomNode(tx, geometry, fieldsName, fields);
-		indexWriter.add(tx, geomNode);
-		return new SpatialDatabaseRecord(this, geomNode, geometry);
+	public SpatialDatabaseRecord add(Transaction tx, Geometry geometry, Map<String, Object> properties) {
+		checkWritable();
+		Node geomNode = addGeomNode(tx, geometry, properties);
+		return addToIndex(tx, geometry, geomNode);
+	}
+
+	protected SpatialDatabaseRecord addToIndex(Transaction tx, Geometry geometry, Node node) {
+		indexWriter.add(tx, node);
+		memorizeNodeMeta(node);
+		return new SpatialDatabaseRecord(this, node, geometry);
+	}
+
+	protected void memorizeNodeMeta(Node node) {
+		node.getAllProperties().forEach((name, value) -> seenProperties.compute(name, (s, aClass) -> {
+			if (aClass == null && value != null) {
+				return value.getClass();
+			}
+			return aClass;
+		}));
 	}
 
 	@Override
 	public void update(Transaction tx, String geomNodeId, Geometry geometry) {
+		checkWritable();
 		indexWriter.remove(tx, geomNodeId, false, true);
 		Node geomNode = tx.getNodeByElementId(geomNodeId);
 		getGeometryEncoder().encodeGeometry(tx, geometry, geomNode);
@@ -53,28 +139,52 @@ public class EditableLayerImpl extends DefaultLayer implements EditableLayer {
 
 	@Override
 	public void delete(Transaction tx, String geomNodeId) {
+		checkWritable();
 		indexWriter.remove(tx, geomNodeId, true, false);
+	}
+
+	/**
+	 * Delete Layer
+	 */
+	@Override
+	public void delete(Transaction tx, ProgressListener monitor) {
+		checkWritable();
+		indexWriter.removeAll(tx, true, monitor);
+		Node layerNode = getLayerNode(tx);
+		layerNode.delete();
+		layerNodeId = null;
 	}
 
 	@Override
 	public void removeFromIndex(Transaction tx, String geomNodeId) {
+		checkWritable();
 		final boolean deleteGeomNode = false;
 		indexWriter.remove(tx, geomNodeId, deleteGeomNode, false);
 	}
 
-	protected Node addGeomNode(Transaction tx, Geometry geom, String[] fieldsName, Object[] fields) {
+	protected Node addGeomNode(Transaction tx, Geometry geom, Map<String, Object> properties) {
+		checkWritable();
 		Node geomNode = tx.createNode();
-		// other properties
-		if (fieldsName != null) {
-			for (int i = 0; i < fieldsName.length; i++) {
-				if (fieldsName[i] != null && fields[i] != null) {
-					geomNode.setProperty(fieldsName[i], fields[i]);
-				}
-			}
+		if (properties != null) {
+			properties.forEach(geomNode::setProperty);
 		}
 		getGeometryEncoder().encodeGeometry(tx, geom, geomNode);
 
 		return geomNode;
+	}
+
+	void mergeExtraPropertyNames(Transaction tx, Set<String> names) {
+		Node layerNode = getLayerNode(tx);
+		if (layerNode.hasProperty(PROP_LAYERNODEEXTRAPROPS)) {
+			String[] actualNames = (String[]) layerNode.getProperty(PROP_LAYERNODEEXTRAPROPS);
+
+			Set<String> mergedNames = new HashSet<>(names);
+			Collections.addAll(mergedNames, actualNames);
+
+			layerNode.setProperty(PROP_LAYERNODEEXTRAPROPS, mergedNames.toArray(new String[0]));
+		} else {
+			layerNode.setProperty(PROP_LAYERNODEEXTRAPROPS, names.toArray(new String[0]));
+		}
 	}
 
 	@Override
@@ -82,8 +192,48 @@ public class EditableLayerImpl extends DefaultLayer implements EditableLayer {
 		return "Editable" + super.getSignature();
 	}
 
+	public void setCoordinateReferenceSystem(Transaction tx, CoordinateReferenceSystem crs) {
+		checkWritable();
+		Node layerNode = getLayerNode(tx);
+		layerNode.setProperty(PROP_CRS, crs.toWKT());
+	}
+
+	public void setGeometryType(Transaction tx, int geometryType) {
+		checkWritable();
+		Node layerNode = getLayerNode(tx);
+		if (geometryType < GTYPE_POINT || geometryType > GTYPE_MULTIPOLYGON) {
+			throw new IllegalArgumentException("Unknown geometry type: " + geometryType);
+		}
+
+		layerNode.setProperty(PROP_TYPE, geometryType);
+	}
+
+	public void setExtraPropertyNames(String[] names, Transaction tx) {
+		checkWritable();
+		getLayerNode(tx).setProperty(PROP_LAYERNODEEXTRAPROPS, names);
+	}
+
 	@Override
 	public void finalizeTransaction(Transaction tx) {
-		getIndex().finalizeTransaction(tx);
+		if (!isReadOnly()) {
+			saveAttributeMeta(tx);
+			getIndex().finalizeTransaction(tx);
+		}
 	}
+
+	private void saveAttributeMeta(Transaction tx) {
+		var node = getLayerNode(tx);
+		Set<String> encoderProps = getGeometryEncoder().getEncoderProperties();
+		Map<String, Class<?>> props = new HashMap<>(seenProperties);
+		props.keySet().removeAll(encoderProps);
+		props.forEach((s, aClass) -> {
+			var key = PROP_PREFIX_EXTRA_PROP_V2 + s;
+			if (node.hasProperty(key)) {
+				return;
+			}
+			node.setProperty(key, aClass == null ? null : aClass.getName());
+		});
+		mergeExtraPropertyNames(tx, props.keySet());
+	}
+
 }

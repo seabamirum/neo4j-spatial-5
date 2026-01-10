@@ -41,13 +41,14 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.StreamSupport;
 import org.apache.commons.io.FileUtils;
 import org.geotools.api.feature.simple.SimpleFeatureType;
 import org.geotools.api.referencing.crs.CoordinateReferenceSystem;
-import org.geotools.data.neo4j.Neo4jFeatureBuilder;
 import org.geotools.referencing.crs.DefaultEngineeringCRS;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
@@ -59,21 +60,20 @@ import org.locationtech.jts.geom.Geometry;
 import org.neo4j.dbms.api.DatabaseManagementService;
 import org.neo4j.dbms.api.DatabaseManagementServiceBuilder;
 import org.neo4j.gis.spatial.encoders.SimplePointEncoder;
+import org.neo4j.gis.spatial.feature.Neo4jServerFeatureBuilder;
 import org.neo4j.gis.spatial.index.ExplicitIndexBackedMonitor;
 import org.neo4j.gis.spatial.index.ExplicitIndexBackedPointIndex;
-import org.neo4j.gis.spatial.index.IndexManager;
+import org.neo4j.gis.spatial.index.IndexManagerImpl;
 import org.neo4j.gis.spatial.index.LayerGeohashPointIndex;
 import org.neo4j.gis.spatial.index.LayerHilbertPointIndex;
-import org.neo4j.gis.spatial.index.LayerIndexReader;
+import org.neo4j.gis.spatial.index.LayerRTreeIndex;
 import org.neo4j.gis.spatial.index.LayerZOrderPointIndex;
 import org.neo4j.gis.spatial.pipes.GeoPipeFlow;
 import org.neo4j.gis.spatial.pipes.GeoPipeline;
-import org.neo4j.gis.spatial.rtree.Envelope;
 import org.neo4j.gis.spatial.rtree.RTreeImageExporter;
 import org.neo4j.gis.spatial.rtree.RTreeIndex;
 import org.neo4j.gis.spatial.rtree.RTreeMonitor;
 import org.neo4j.gis.spatial.rtree.RTreeRelationshipTypes;
-import org.neo4j.gis.spatial.rtree.TreeMonitor;
 import org.neo4j.graphdb.Direction;
 import org.neo4j.graphdb.GraphDatabaseService;
 import org.neo4j.graphdb.Label;
@@ -84,6 +84,12 @@ import org.neo4j.graphdb.Result;
 import org.neo4j.graphdb.Transaction;
 import org.neo4j.internal.kernel.api.security.SecurityContext;
 import org.neo4j.kernel.internal.GraphDatabaseAPI;
+import org.neo4j.spatial.api.Envelope;
+import org.neo4j.spatial.api.encoder.GeometryEncoder;
+import org.neo4j.spatial.api.index.SpatialIndexReader;
+import org.neo4j.spatial.api.layer.EditableLayer;
+import org.neo4j.spatial.api.layer.Layer;
+import org.neo4j.spatial.api.monitoring.TreeMonitor;
 
 public class RTreeBulkInsertTest {
 
@@ -172,14 +178,15 @@ public class RTreeBulkInsertTest {
 	}
 
 	SpatialDatabaseService spatial() {
-		return new SpatialDatabaseService(new IndexManager((GraphDatabaseAPI) db, SecurityContext.AUTH_DISABLED));
+		return new SpatialDatabaseService(new IndexManagerImpl((GraphDatabaseAPI) db, SecurityContext.AUTH_DISABLED));
 	}
 
 	private EditableLayer getOrCreateSimplePointLayer(String name, String index, String xProperty, String yProperty) {
 		CoordinateReferenceSystem crs = DefaultEngineeringCRS.GENERIC_2D;
 		try (Transaction tx = db.beginTx()) {
 			SpatialDatabaseService sdbs = spatial();
-			EditableLayer layer = sdbs.getOrCreateSimplePointLayer(tx, name, index, xProperty, yProperty, null);
+			EditableLayer layer = sdbs.getOrCreateSimplePointLayer(tx, name, index, xProperty, yProperty, null,
+					false);
 			layer.setCoordinateReferenceSystem(tx, crs);
 			tx.commit();
 			return layer;
@@ -216,7 +223,6 @@ public class RTreeBulkInsertTest {
 			layer.addAll(tx, idsToNodes(tx, list1));
 			tx.commit();
 		}
-		Neo4jTestUtils.debugIndexTree(db, "Coordinates");
 		//TODO add this part to the test
 //        try (Transaction tx = db.beginTx()) {
 //            layer.addAll(list2);
@@ -225,11 +231,6 @@ public class RTreeBulkInsertTest {
 
 		System.out.println("Took " + (System.currentTimeMillis() - start) + "ms to add " + (width * width)
 				+ " nodes to RTree in bulk");
-
-//        queryRTree(layer);
-//        verifyTreeStructure(layer);
-		Neo4jTestUtils.debugIndexTree(db, "Coordinates");
-
 	}
 
 	private static List<Node> idsToNodes(Transaction tx, List<String> nodeIds) {
@@ -312,7 +313,7 @@ public class RTreeBulkInsertTest {
 		@Override
 		public EditableLayer setupLayer(Transaction tx) {
 			this.nodes = setup(name, "geohash", config.width);
-			this.layer = (EditableLayer) spatial().getLayer(tx, "Coordinates");
+			this.layer = (EditableLayer) spatial().getLayer(tx, "Coordinates", false);
 			return layer;
 		}
 
@@ -361,7 +362,7 @@ public class RTreeBulkInsertTest {
 		@Override
 		public EditableLayer setupLayer(Transaction tx) {
 			this.nodes = setup(name, "zorder", config.width);
-			this.layer = (EditableLayer) spatial().getLayer(tx, "Coordinates");
+			this.layer = (EditableLayer) spatial().getLayer(tx, "Coordinates", false);
 			return layer;
 		}
 
@@ -410,7 +411,7 @@ public class RTreeBulkInsertTest {
 		@Override
 		public EditableLayer setupLayer(Transaction tx) {
 			this.nodes = setup(name, "hilbert", config.width);
-			this.layer = (EditableLayer) spatial().getLayer(tx, "Coordinates");
+			this.layer = (EditableLayer) spatial().getLayer(tx, "Coordinates", false);
 			return layer;
 		}
 
@@ -473,7 +474,7 @@ public class RTreeBulkInsertTest {
 		@Override
 		public EditableLayer setupLayer(Transaction tx) {
 			this.nodes = setup(name, "rtree", config.width);
-			this.layer = (EditableLayer) spatial.getLayer(tx, name);
+			this.layer = (EditableLayer) spatial.getLayer(tx, name, false);
 			layer.getIndex().configure(Map.of(
 					RTreeIndex.KEY_SPLIT, splitMode,
 					RTreeIndex.KEY_MAX_NODE_REFERENCES, maxNodeReferences,
@@ -821,6 +822,8 @@ public class RTreeBulkInsertTest {
 
 	class TreePrintingMonitor extends RTreeMonitor {
 
+		private static final Logger LOGGER = Logger.getLogger(TreePrintingMonitor.class.getName());
+
 		private final RTreeImageExporter imageExporter;
 		private final String splitMode;
 		private final String insertMode;
@@ -840,9 +843,11 @@ public class RTreeBulkInsertTest {
 		}
 
 		@Override
-		public void addNbrRebuilt(RTreeIndex rtree, Transaction tx) {
-			super.addNbrRebuilt(rtree, tx);
-			printRTreeImage("rebuilt", rtree.getIndexRoot(tx), new ArrayList<>());
+		public void addNbrRebuilt(SpatialIndexReader indexReader, Transaction tx) {
+			super.addNbrRebuilt(indexReader, tx);
+			if (indexReader instanceof RTreeIndex rtree) {
+				printRTreeImage("rebuilt", rtree.getIndexRoot(tx), new ArrayList<>());
+			}
 		}
 
 		@Override
@@ -852,7 +857,7 @@ public class RTreeBulkInsertTest {
 		}
 
 		@Override
-		public void beforeMergeTree(Node indexNode, List<RTreeIndex.NodeWithEnvelope> right) {
+		public void beforeMergeTree(Node indexNode, List<NodeWithEnvelope> right) {
 			super.beforeMergeTree(indexNode, right);
 
 			printRTreeImage("before-merge", indexNode,
@@ -877,8 +882,7 @@ public class RTreeBulkInsertTest {
 				called.put(context, count + 1);
 				tx.commit();
 			} catch (IOException e) {
-				System.out.println("Failed to print RTree to disk: " + e.getMessage());
-				e.printStackTrace();
+				LOGGER.log(Level.WARNING, "Failed to print RTree to disk: " + e);
 			}
 		}
 	}
@@ -947,7 +951,7 @@ public class RTreeBulkInsertTest {
 		RTreeIndex rtree = (RTreeIndex) layer.getIndex();
 		RTreeImageExporter imageExporter;
 		try (Transaction tx = db.beginTx()) {
-			SimpleFeatureType featureType = Neo4jFeatureBuilder.getTypeFromLayer(tx, layer);
+			SimpleFeatureType featureType = Neo4jServerFeatureBuilder.getTypeFromLayer(tx, layer);
 			imageExporter = new RTreeImageExporter(layer.getGeometryFactory(), layer.getGeometryEncoder(),
 					layer.getCoordinateReferenceSystem(tx), featureType, rtree);
 			imageExporter.initialize(tx, new Coordinate(0.0, 0.0), new Coordinate(1.0, 1.0));
@@ -1058,7 +1062,7 @@ public class RTreeBulkInsertTest {
 		RTreeIndex rtree = (RTreeIndex) layer.getIndex();
 		RTreeImageExporter imageExporter;
 		try (Transaction tx = db.beginTx()) {
-			SimpleFeatureType featureType = Neo4jFeatureBuilder.getTypeFromLayer(tx, layer);
+			SimpleFeatureType featureType = Neo4jServerFeatureBuilder.getTypeFromLayer(tx, layer);
 			imageExporter = new RTreeImageExporter(layer.getGeometryFactory(), layer.getGeometryEncoder(),
 					layer.getCoordinateReferenceSystem(tx), featureType, rtree);
 			imageExporter.initialize(tx, new Coordinate(0.0, 0.0), new Coordinate(1.0, 1.0));
@@ -1147,7 +1151,6 @@ public class RTreeBulkInsertTest {
 					"CALL spatial.withinDistance('Coordinates',{longitude:0.5, latitude:0.5},1000.0) yield node\n" +
 							"RETURN COUNT(node) as count";
 			Result result = tx.execute(cypher);
-//           System.out.println(result.columns().toString());
 			Object obj = result.columnAs("count").next();
 			assertInstanceOf(Long.class, obj);
 			assertEquals((long) ((Long) obj), numNodes);
@@ -1162,7 +1165,6 @@ public class RTreeBulkInsertTest {
 					"MATCH (n)-[:RTREE_CHILD*]->(m)-[:RTREE_REFERENCE]->(p)\n" +
 					"RETURN COUNT(p) as count";
 			Result result = tx.execute(cypher);
-//           System.out.println(result.columns().toString());
 			Object obj = result.columnAs("count").next();
 			assertInstanceOf(Long.class, obj);
 			assertEquals((long) ((Long) obj), numNodes);
@@ -1200,8 +1202,8 @@ public class RTreeBulkInsertTest {
 			System.out.println("Building a Tree with " + i + " nodes");
 			try (Transaction tx = db.beginTx()) {
 
-				RTreeIndex rtree = new RTreeIndex();
-				rtree.init(tx, tx.createNode(), encoder, DEFAULT_MAX_NODE_REFERENCES);
+				RTreeIndex rtree = new LayerRTreeIndex();
+				rtree.init(tx, tx.createNode(), encoder, DEFAULT_MAX_NODE_REFERENCES, true);
 				List<Node> coords = new ArrayList<>(i);
 				for (int j = 0; j < i; j++) {
 					Node n = tx.createNode(Label.label("Coordinate"));
@@ -1245,7 +1247,8 @@ public class RTreeBulkInsertTest {
 			System.out.println("BulkLoadingTestRun " + j);
 			try (Transaction tx = db.beginTx()) {
 
-				EditableLayer layer = sdbs.getOrCreateSimplePointLayer(tx, "BulkLoader", "rtree", "lon", "lat", null);
+				EditableLayer layer = sdbs.getOrCreateSimplePointLayer(tx, "BulkLoader", "rtree", "lon", "lat", null,
+						false);
 				List<Node> coords = new ArrayList<>(N);
 				for (int i = 0; i < N; i++) {
 					Node n = tx.createNode(Label.label("Coordinate"));
@@ -1282,7 +1285,7 @@ public class RTreeBulkInsertTest {
 		}
 
 		try (Transaction tx = db.beginTx()) {
-			Layer layer = sdbs.getLayer(tx, "BulkLoader");
+			Layer layer = sdbs.getLayer(tx, "BulkLoader", false);
 			RTreeIndex rtree = (RTreeIndex) layer.getIndex();
 
 			Node root = rtree.getIndexRoot(tx);
@@ -1432,8 +1435,8 @@ public class RTreeBulkInsertTest {
 		int matched = monitor.getCaseCounts().get("Geometry Matches");
 		int indexSize = 0;
 		try (Transaction tx = db.beginTx()) {
-		    indexSize += StreamSupport.stream(index.getAllIndexInternalNodes(tx).spliterator(), false).count();
-		    tx.commit();
+			indexSize += StreamSupport.stream(index.getAllIndexInternalNodes(tx).spliterator(), false).count();
+			tx.commit();
 		}
 		stats.put("Index Size", indexSize);
 		stats.put("Found", matched);
@@ -1521,17 +1524,17 @@ public class RTreeBulkInsertTest {
 	}
 
 	private static void verifyGeohashIndex(Layer layer) {
-		LayerIndexReader index = layer.getIndex();
+		SpatialIndexReader index = layer.getIndex();
 		assertInstanceOf(LayerGeohashPointIndex.class, index, "Index should be a geohash index");
 	}
 
 	private static void verifyHilbertIndex(Layer layer) {
-		LayerIndexReader index = layer.getIndex();
+		SpatialIndexReader index = layer.getIndex();
 		assertInstanceOf(LayerHilbertPointIndex.class, index, "Index should be a hilbert index");
 	}
 
 	private static void verifyZOrderIndex(Layer layer) {
-		LayerIndexReader index = layer.getIndex();
+		SpatialIndexReader index = layer.getIndex();
 		assertInstanceOf(LayerZOrderPointIndex.class, index, "Index should be a Z-Order index");
 	}
 
